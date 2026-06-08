@@ -1,0 +1,40 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test
+*.test
+*.out
+coverage.out
+
+# Build
+/dist/
+/clickhouse-movoor
+/web/dist
+
+# Generated
+api/generated/
+web/src/api/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config
+config.yaml
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+
+# Junk
+.playwright-mcp

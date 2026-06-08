@@ -1,0 +1,12 @@
+extends:
+  - recommended
+
+rules:
+  info-license: error
+  no-server-example.com: error
+  tag-description: error
+  operation-4xx-response: error
+  no-unused-components: error
+  operation-2xx-response: off
+  # The skeleton API has no auth scheme yet. Re-enable once one is added.
+  security-defined: off
