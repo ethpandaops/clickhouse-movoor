@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en" itemscope="" itemtype="http://schema.org/Webpage">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=5.0, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#f3fcf7" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <style>
+      /* Critical CSS - Inline for instant rendering */
+      body:not(.react-loaded) * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body:not(.react-loaded) {
+        font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
+        background: #f3fcf7;
+        min-height: 100vh;
+        overflow: hidden;
+      }
+
+      body:not(.react-loaded) #loading-screen {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: #f3fcf7;
+        z-index: 50;
+      }
+    </style>
+    <script>
+      // Initialize theme before React mounts to prevent FOUC
+      (function () {
+        var themeColors = { light: '#f3fcf7', dark: '#000000' };
+        var theme = localStorage.getItem('theme');
+        var resolved = 'light';
+        var root = document.documentElement;
+        var body = document.body;
+
+        if (theme === 'dark') {
+          root.classList.add('dark');
+          resolved = 'dark';
+        } else if (theme === 'light') {
+          // Light theme is default, no class needed
+        } else {
+          // No (or system) theme set, use system preference
+          var isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (isDark) {
+            root.classList.add('dark');
+            resolved = 'dark';
+          }
+        }
+
+        var hardcoded = themeColors[resolved];
+
+        try {
+          var styles = window.getComputedStyle(root);
+          var backgroundColor = styles.getPropertyValue('--color-background').trim();
+          var browserColor = styles.getPropertyValue('--theme-browser-color').trim();
+          if (backgroundColor && body) {
+            body.style.background = backgroundColor;
+            var loading = document.getElementById('loading-screen');
+            if (loading) loading.style.background = backgroundColor;
+          }
+          if (browserColor) {
+            hardcoded = browserColor;
+          }
+        } catch (_error) {
+          /* fall back to the hardcoded color below */
+        }
+
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', hardcoded);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="loading-screen"></div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

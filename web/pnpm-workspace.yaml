@@ -1,0 +1,14 @@
+minimumReleaseAge: 1440
+
+overrides:
+  cosmiconfig: 9.0.1
+
+peerDependencyRules:
+  allowedVersions:
+    'eslint-plugin-react>eslint': '10'
+
+allowBuilds:
+  '@tailwindcss/oxide': true
+  core-js: true
+  esbuild: true
+  msw: true

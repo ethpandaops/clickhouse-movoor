@@ -1,0 +1,61 @@
+openapi: 3.1.0
+info:
+  title: clickhouse-movoor API
+  version: 0.1.0
+  description: Skeleton JSON API for clickhouse-movoor.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+servers:
+  - url: /api/v1
+    description: Default API base path served by the binary.
+tags:
+  - name: system
+    description: System and liveness endpoints.
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      summary: Liveness probe
+      description: Returns the current service status.
+      tags:
+        - system
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "400":
+          description: Malformed request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Service is unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  schemas:
+    Health:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          description: Overall service status.
+          examples:
+            - ok
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Human-readable error message.

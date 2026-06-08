@@ -1,0 +1,10 @@
+# Runtime image for goreleaser-built binaries. goreleaser compiles the binary
+# (with the embedded web UI) per platform and places it under ${TARGETPLATFORM};
+# this image just packages it.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG TARGETPLATFORM
+COPY ${TARGETPLATFORM}/clickhouse-movoor /usr/local/bin/clickhouse-movoor
+
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/clickhouse-movoor"]

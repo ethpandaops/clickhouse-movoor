@@ -1,0 +1,64 @@
+name: alpha releases
+
+on:
+  push:
+    branches:
+      - 'release/*'
+
+jobs:
+  tag-release:
+    permissions:
+      contents: write
+    runs-on:
+      - self-hosted-ghr
+      - size-m-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+          token: ${{ secrets.EPOBOT_TOKEN }}
+      - name: Get latest release version for this release branch
+        if: startsWith(github.ref, 'refs/heads/release/')
+        id: latest_version
+        run: |
+          # Extract suffix from branch name (e.g., 'dencun' from 'release/dencun')
+          RELEASE_SUFFIX=${GITHUB_REF#refs/heads/release/}
+
+          # Get the latest matching tag from local git (fetch-depth: 0 ensures all tags are available)
+          git fetch --tags
+          LATEST_VERSION=$(git tag -l | grep -E "^v?[0-9]+\.[0-9]+\.[0-9]+-${RELEASE_SUFFIX}$" | sort -V | tail -n 1)
+          echo "Found latest $RELEASE_SUFFIX version: $LATEST_VERSION"
+
+          # Default to v0.0.0 if no matching release was found
+          if [[ -z "$LATEST_VERSION" ]]; then
+            LATEST_VERSION="v0.0.0"
+          fi
+
+          # Strip the 'v' prefix for version arithmetic
+          LATEST_VERSION=${LATEST_VERSION#v}
+
+          # Increment the patch version using bash
+          LATEST_VERSION=$(echo "$LATEST_VERSION" | awk -F. -v OFS=. '{$NF = $NF + 1;} 1')
+
+          VERSION=v$LATEST_VERSION-$RELEASE_SUFFIX
+
+          echo "Releasing version: $VERSION"
+
+          git config --global user.email "ethpandaopsbot@ethereum.org"
+          git config --global user.name "ethpandaopsbot"
+
+          # Log the short commit SHA
+          SHORT_COMMIT=$(git rev-parse --short HEAD)
+
+          echo "Git commit: $SHORT_COMMIT"
+
+          git tag -a "$VERSION" -m "Release $VERSION"
+
+          echo "RELEASE_SUFFIX=$RELEASE_SUFFIX" >> $GITHUB_ENV
+
+          # Push the tag
+          git push origin "$VERSION"
+        env:
+          GITHUB_TOKEN: ${{ secrets.EPOBOT_TOKEN }}

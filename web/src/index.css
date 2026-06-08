@@ -1,0 +1,178 @@
+/**
+ * Main CSS Entry Point
+ *
+ * Import order:
+ * 1. Fonts
+ * 2. Tailwind base
+ * 3. Theme configuration (@theme directive): primitive scales + semantic tokens
+ * 4. CSS Variables (dynamic light/dark theming)
+ * 5. Base styles
+ */
+
+/* Fonts */
+@import '@fontsource-variable/inter';
+@import '@fontsource/ibm-plex-mono';
+
+@import 'tailwindcss';
+
+/* Tailwind CSS v4 plugins via @plugin directive */
+@plugin '@tailwindcss/forms';
+
+/* Enable class-based dark mode */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Two-Tier Token Architecture
+ *
+ * Tier 1: Primitive color scales (foundation)
+ * Tier 2: Semantic tokens (application layer)
+ *
+ * Application code must only use the Tier 2 semantic tokens (enforced by the
+ * custom ESLint rules in eslint-rules/).
+ */
+@theme {
+  /* ===== Font Families ===== */
+  --font-sans: 'Inter Variable', 'Inter', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  /* ===== Custom Breakpoints ===== */
+  --breakpoint-3xl: 120rem; /* 1920px */
+  --breakpoint-4xl: 160rem; /* 2560px */
+
+  /* ===== TIER 1: Primitive Color Scales ===== */
+
+  /* Neutral - green-tinted terminal grayscale (50 = darkest) */
+  --color-neutral-50: #010504;
+  --color-neutral-100: #0a2d1c;
+  --color-neutral-200: #0e3a24;
+  --color-neutral-300: #155e3a;
+  --color-neutral-400: #1a6f44;
+  --color-neutral-500: #1d7e4c;
+  --color-neutral-600: #1f8c54;
+  --color-neutral-700: #2a9963;
+  --color-neutral-800: #74efb1;
+  --color-neutral-900: #c8ffea;
+  --color-neutral-950: #eafff5;
+
+  /* Brand - neon green accent scale */
+  --color-brand-100: #052e1c;
+  --color-brand-200: #073d22;
+  --color-brand-300: #0d5e38;
+  --color-brand-400: #138a50;
+  --color-brand-500: #00ff88;
+  --color-brand-600: #3ee6b4;
+  --color-brand-700: #4ae085;
+  --color-brand-800: #93f5c8;
+
+  /* ===== TIER 2: Semantic Tokens ===== */
+
+  /* Action and accent colors */
+  --color-primary: var(--primary-value);
+  --color-secondary: var(--secondary-value);
+  --color-accent: var(--accent-value);
+  --color-on-primary: var(--on-primary-value);
+
+  /* Surface colors */
+  --color-background: var(--background-value);
+  --color-surface: var(--surface-value);
+  --color-foreground: var(--foreground-value);
+  --color-muted: var(--muted-value);
+  --color-border: var(--border-value);
+
+  /* State colors */
+  --color-success: #4ae085;
+  --color-warning: #f6c85f;
+  --color-danger: #ff8f70;
+
+  /* Animations */
+  --animate-fade-in: fade-in 0.5s ease-out forwards;
+
+  @keyframes fade-in {
+    0% {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Semantic token mappings
+ *
+ * Maps semantic tokens to primitive color scales for light and dark mode.
+ */
+@layer base {
+  :root {
+    /* Light mode - green on paper */
+    --primary-value: #00cc6e;
+    --secondary-value: #0284c7;
+    --accent-value: var(--color-brand-400);
+    --on-primary-value: #04140c;
+    --background-value: #f3fcf7;
+    --surface-value: #ffffff;
+    --foreground-value: var(--color-neutral-200);
+    --muted-value: var(--color-neutral-600);
+    --border-value: #c2ead4;
+
+    --theme-browser-color: #f3fcf7;
+
+    /* Set html background for overscroll */
+    background-color: #f3fcf7;
+  }
+
+  html.dark {
+    /* Dark mode - neon terminal */
+    --primary-value: #00ff88;
+    --secondary-value: #7dd3fc;
+    --accent-value: var(--color-brand-700);
+    --on-primary-value: #000;
+    --background-value: #000000;
+    --surface-value: var(--color-neutral-100);
+    --foreground-value: var(--color-neutral-900);
+    --muted-value: var(--color-neutral-700);
+    --border-value: var(--color-neutral-300);
+
+    --theme-browser-color: #000000;
+
+    /* Set html background for overscroll */
+    background-color: #000000;
+  }
+
+  /* Apply Inter for all text */
+  body {
+    font-family: 'Inter Variable', 'Inter', system-ui, sans-serif;
+    color: var(--foreground-value);
+    background-color: var(--background-value);
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  }
+
+  /* Global focus styles - use primary action color */
+  *:focus-visible:not(button):not(a):not([role='button']):not(input):not(textarea):not(select) {
+    outline: 2px solid var(--primary-value);
+    outline-offset: 2px;
+  }
+
+  /* Remove default focus outline from buttons, links, and role=button elements */
+  button:focus-visible,
+  a:focus-visible,
+  [role='button']:focus-visible {
+    outline: none;
+  }
+
+  /* Hide scrollbars while maintaining scroll functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none; /* Chrome, Safari, Opera */
+  }
+}
