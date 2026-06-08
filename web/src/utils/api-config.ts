@@ -21,11 +21,21 @@ interface ClientConfig {
   fetch?: typeof fetch;
 }
 
+const resolveBaseUrl = (serverBaseUrl?: string): string => {
+  const base = serverBaseUrl || PATH_PREFIX;
+
+  if (/^https?:\/\//.test(base)) {
+    return base;
+  }
+
+  return `${BASE_URL}${base}`;
+};
+
 export const createClientConfig = <T extends ClientConfig>(
   config: T
 ): T & { baseUrl: string; fetch: typeof fetch } => ({
   ...config,
-  baseUrl: BASE_URL,
+  baseUrl: resolveBaseUrl(config.baseUrl),
   fetch: async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const response = await globalThis.fetch(input, { ...init, credentials: 'include' });
 

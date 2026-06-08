@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: build build-web generate lint lint-openapi fmt test clean tidy vuln modernize-check audit check-release run test/cover setup-frontend help
+.PHONY: build build-web generate lint lint-openapi fmt test test-integration clean tidy vuln modernize-check audit check-release run test/cover setup-frontend help
 
 BUILD_DIR := ./cmd/clickhouse-movoor
 BINARY := clickhouse-movoor
@@ -49,6 +49,11 @@ fmt:
 ## test: run tests with race detector
 test:
 	go test -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
+
+## test-integration: run ClickHouse-backed integration tests
+test-integration:
+	docker compose -f dev/clickhouse-2s2r/docker-compose.yml up -d --wait
+	MOVOOR_CLICKHOUSE_INTEGRATION=1 go test ./internal/clusterstate ./internal/server -count=1 -v
 
 ## clean: remove build outputs
 clean:

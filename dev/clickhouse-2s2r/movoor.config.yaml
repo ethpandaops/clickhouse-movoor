@@ -1,0 +1,84 @@
+logging: info
+metricsAddr: ":9090"
+healthCheckAddr: ":8081"
+
+clickhouse:
+  queryTimeout: 30s
+  dialTimeout: 5s
+
+  nodes:
+    - name: clickhouse-shard1-replica1
+      shard: shard1
+      replica: replica1
+      dsn: "clickhouse://default@127.0.0.1:9000/default"
+
+    - name: clickhouse-shard1-replica2
+      shard: shard1
+      replica: replica2
+      dsn: "clickhouse://default@127.0.0.1:9001/default"
+
+    - name: clickhouse-shard2-replica1
+      shard: shard2
+      replica: replica1
+      dsn: "clickhouse://default@127.0.0.1:9002/default"
+
+    - name: clickhouse-shard2-replica2
+      shard: shard2
+      replica: replica2
+      dsn: "clickhouse://default@127.0.0.1:9003/default"
+
+watches:
+  - database: movoor_dev
+    table: events_local
+
+  - database: movoor_dev
+    table: test_generic_network_month_local
+
+  - database: movoor_dev
+    table: test_generic_chain_month_local
+
+  - database: movoor_dev
+    table: test_generic_network_block_bucket_local
+
+  - database: movoor_dev
+    table: test_generic_block_bucket_local
+
+  - database: movoor_dev
+    table: test_generic_start_block_bucket_local
+
+  - database: movoor_dev
+    table: test_generic_month_start_local
+
+  - database: movoor_dev
+    table: test_generic_month_number_local
+
+  - database: movoor_dev
+    table: test_generic_network_only_local
+
+  - database: movoor_dev
+    table: test_generic_bucket_only_local
+
+  - database: movoor_dev
+    table: test_generic_bucket_block_bucket_local
+
+  - database: movoor_dev
+    table: test_generic_bucket_month_start_local
+
+  - database: movoor_dev
+    table: test_generic_bucket_month_number_local
+
+  - database: movoor_dev
+    table: test_generic_tuple_version_local
+
+  - database: movoor_dev
+    table: test_generic_unpartitioned_replacing_local
+
+  - database: movoor_dev
+    table: test_generic_plain_month_local
+
+  - database: movoor_dev
+    table: test_generic_unpartitioned_plain_local
+
+frontend:
+  enabled: true
+  addr: ":8080"

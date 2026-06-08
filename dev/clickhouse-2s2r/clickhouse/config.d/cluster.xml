@@ -1,0 +1,56 @@
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+
+    <remote_servers>
+        <default remove="remove"/>
+
+        <movoor_cluster>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>clickhouse-shard1-replica1</host>
+                    <port>9000</port>
+                </replica>
+                <replica>
+                    <host>clickhouse-shard1-replica2</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica>
+                    <host>clickhouse-shard2-replica1</host>
+                    <port>9000</port>
+                </replica>
+                <replica>
+                    <host>clickhouse-shard2-replica2</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </movoor_cluster>
+    </remote_servers>
+
+    <zookeeper>
+        <node index="1">
+            <host>keeper1</host>
+            <port>9181</port>
+        </node>
+        <node index="2">
+            <host>keeper2</host>
+            <port>9181</port>
+        </node>
+        <node index="3">
+            <host>keeper3</host>
+            <port>9181</port>
+        </node>
+    </zookeeper>
+
+    <macros>
+        <shard from_env="CLICKHOUSE_SHARD"/>
+        <replica from_env="CLICKHOUSE_REPLICA"/>
+    </macros>
+
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+    </distributed_ddl>
+</clickhouse>

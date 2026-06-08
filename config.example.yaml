@@ -1,0 +1,40 @@
+# clickhouse-movoor configuration.
+
+logging: info
+metricsAddr: ":9090"
+healthCheckAddr: ":8081"
+
+clickhouse:
+  queryTimeout: 30s
+  dialTimeout: 5s
+
+  # Each entry is one physical ClickHouse node. Do not use comma-separated
+  # failover DSNs or load-balanced addresses here; movoor needs node identity.
+  nodes:
+    - name: something-0-0
+      shard: "0"
+      replica: "0"
+      dsn: "clickhouse://default:password@node1:9000/default"
+
+    - name: something-0-1
+      shard: "0"
+      replica: "1"
+      dsn: "clickhouse://default:password@node2:9000/default"
+
+    - name: something-1-0
+      shard: "1"
+      replica: "0"
+      dsn: "clickhouse://default:password@node3:9000/default"
+
+    - name: something-1-1
+      shard: "1"
+      replica: "1"
+      dsn: "clickhouse://default:password@node4:9000/default"
+
+watches:
+  - database: default
+    table: something
+
+frontend:
+  enabled: true
+  addr: ":8080"

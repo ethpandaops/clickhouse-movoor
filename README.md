@@ -37,6 +37,7 @@ make build-web
 make build
 
 # Run it
+cp config.example.yaml config.yaml
 ./clickhouse-movoor --config config.yaml
 ```
 
@@ -58,6 +59,7 @@ pnpm generate:api # regenerate the typed API client from ../api/openapi.yaml
 | ---------------- | -------------------------------------------- |
 | `make build`     | Compile the binary with the embedded web UI  |
 | `make test`      | Run Go tests with the race detector          |
+| `make test-integration` | Run ClickHouse-backed integration tests |
 | `make lint`      | Run golangci-lint                            |
 | `make audit`     | lint + test + vuln + modernize + mod verify  |
 | `make run`       | Build and run with `config.yaml`             |

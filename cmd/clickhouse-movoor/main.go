@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/lmittmann/tint"
@@ -52,6 +53,15 @@ func run() error {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadOrDefaultConfig(configFile)
+			if err != nil {
+				return err
+			}
+			cfg.ResolveDefaults()
+
+			if levelErr := setLogLevel(&logLevel, cfg.Logging); levelErr != nil {
+				return levelErr
+			}
 			if verbose {
 				logLevel.Set(slog.LevelDebug)
 			}
@@ -59,12 +69,6 @@ func run() error {
 			log := newLogger(&logLevel, logFormat, verbose)
 			slog.SetDefault(log)
 
-			cfg, err := loadOrDefaultConfig(configFile)
-			if err != nil {
-				return err
-			}
-
-			cfg.ResolveDefaults()
 			movoor.Version = version
 
 			app, err := movoor.New(log, cfg)
@@ -86,6 +90,23 @@ func run() error {
 	defer cancel()
 
 	return rootCmd.ExecuteContext(ctx)
+}
+
+func setLogLevel(level *slog.LevelVar, configured string) error {
+	switch strings.ToLower(configured) {
+	case "debug":
+		level.Set(slog.LevelDebug)
+	case "info":
+		level.Set(slog.LevelInfo)
+	case "warn", "warning":
+		level.Set(slog.LevelWarn)
+	case "error":
+		level.Set(slog.LevelError)
+	default:
+		return fmt.Errorf("invalid logging level %q", configured)
+	}
+
+	return nil
 }
 
 // newLogger builds an *slog.Logger using a colourised text handler by default,

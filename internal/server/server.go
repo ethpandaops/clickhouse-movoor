@@ -43,6 +43,7 @@ type server struct {
 	log   *slog.Logger
 	cfg   Config
 	webFS fs.FS
+	state StateReader
 	http  *http.Server
 	addr  string
 }
@@ -50,13 +51,23 @@ type server struct {
 // compile-time check that *server satisfies Server.
 var _ Server = (*server)(nil)
 
+type problemDetails struct {
+	Type     string         `json:"type"`
+	Title    string         `json:"title"`
+	Status   int            `json:"status"`
+	Detail   string         `json:"detail"`
+	Instance string         `json:"instance,omitempty"`
+	Errors   []problemError `json:"errors,omitempty"`
+}
+
 // New constructs a Server that serves webFS as a single-page application and
 // exposes a small JSON API under /api/v1.
-func New(log *slog.Logger, cfg Config, webFS fs.FS) Server {
+func New(log *slog.Logger, cfg Config, webFS fs.FS, state StateReader) Server {
 	return &server{
 		log:   log.With(slog.String("component", "server")),
 		cfg:   cfg,
 		webFS: webFS,
+		state: state,
 	}
 }
 
@@ -109,6 +120,20 @@ func (s *server) Addr() string {
 func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/healthz", s.handleHealth)
+	mux.HandleFunc("GET /api/v1/nodes", s.handleNodes)
+	mux.HandleFunc("GET /api/v1/storage/disks", s.handleStorageDisks)
+	mux.HandleFunc("GET /api/v1/tables", s.handleTables)
+	mux.HandleFunc("GET /api/v1/tables/{database}/{table}", s.handleTable)
+	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/columns", s.handleTableColumns)
+	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/partitions", s.handleTablePartitions)
+	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/parts", s.handleTableParts)
+	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/detached-parts", s.handleDetachedParts)
+	mux.HandleFunc("GET /api/v1/operations", s.handleOperations)
+	mux.HandleFunc("GET /api/v1/operations/mutations", s.handleMutations)
+	mux.HandleFunc("GET /api/v1/operations/replication-queue", s.handleReplicationQueue)
+	mux.HandleFunc("GET /api/v1/part-events", s.handlePartEvents)
+	mux.HandleFunc("GET /api/v1/conditions", s.handleConditions)
+	mux.HandleFunc("/api/", s.handleAPINotFound)
 	mux.Handle("/", s.spaHandler())
 
 	return mux
@@ -120,6 +145,25 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
 		s.log.ErrorContext(r.Context(), "encode health response", slog.Any("error", err))
+	}
+}
+
+func (s *server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	s.writeProblem(w, r, problemDetails{
+		Type:     "about:blank",
+		Title:    http.StatusText(http.StatusNotFound),
+		Status:   http.StatusNotFound,
+		Detail:   "API route is not implemented",
+		Instance: r.URL.RequestURI(),
+	})
+}
+
+func (s *server) writeProblem(w http.ResponseWriter, r *http.Request, problem problemDetails) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(problem.Status)
+
+	if err := json.NewEncoder(w).Encode(problem); err != nil {
+		s.log.ErrorContext(r.Context(), "encode problem response", slog.Any("error", err))
 	}
 }
 

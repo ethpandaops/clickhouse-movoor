@@ -13,6 +13,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
+	"github.com/ethpandaops/clickhouse-movoor/internal/clusterstate"
 	"github.com/ethpandaops/clickhouse-movoor/internal/server"
 	"github.com/ethpandaops/clickhouse-movoor/web"
 )
@@ -26,22 +28,40 @@ type App struct {
 	log    *slog.Logger
 	cfg    Config
 	server server.Server
+	ch     *chclient.Pool
+	state  *clusterstate.Collector
 }
 
 // New constructs an App from the given logger and configuration. It performs
 // only lightweight wiring; heavy initialisation happens in Run.
 func New(log *slog.Logger, cfg Config) (*App, error) {
-	webFS, err := web.GetFS()
-	if err != nil {
-		return nil, fmt.Errorf("load embedded web assets: %w", err)
+	var chPool *chclient.Pool
+	var stateCollector *clusterstate.Collector
+	if len(cfg.ClickHouse.Nodes) > 0 {
+		var err error
+		chPool, err = chclient.NewPool(clickHouseClientConfig(cfg.ClickHouse))
+		if err != nil {
+			return nil, fmt.Errorf("create clickhouse clients: %w", err)
+		}
+		stateCollector = clusterstate.New(chPool, cfg.ClickHouse.QueryTimeout, clusterStateWatches(cfg.Watches))
 	}
 
-	srv := server.New(log, server.Config{ListenAddress: cfg.HTTP.ListenAddress}, webFS)
+	var srv server.Server
+	if cfg.Frontend.IsEnabled() {
+		webFS, err := web.GetFS()
+		if err != nil {
+			return nil, fmt.Errorf("load embedded web assets: %w", err)
+		}
+
+		srv = server.New(log, server.Config{ListenAddress: cfg.Frontend.Addr}, webFS, stateCollector)
+	}
 
 	return &App{
 		log:    log,
 		cfg:    cfg,
 		server: srv,
+		ch:     chPool,
+		state:  stateCollector,
 	}, nil
 }
 
@@ -50,11 +70,22 @@ func New(log *slog.Logger, cfg Config) (*App, error) {
 func (a *App) Run(ctx context.Context) error {
 	a.log.InfoContext(ctx, "starting clickhouse-movoor",
 		slog.String("version", Version),
-		slog.String("listen_address", a.cfg.HTTP.ListenAddress),
+		slog.Bool("frontend_enabled", a.cfg.Frontend.IsEnabled()),
+		slog.String("listen_address", a.cfg.Frontend.Addr),
+		slog.String("metrics_address", a.cfg.MetricsAddr),
+		slog.String("health_check_address", a.cfg.HealthCheckAddr),
+		slog.Int("clickhouse_nodes", len(a.cfg.ClickHouse.Nodes)),
+		slog.Int("watches", len(a.cfg.Watches)),
 	)
 
-	if err := a.server.Start(ctx); err != nil {
-		return fmt.Errorf("start server: %w", err)
+	if err := a.validateWatches(ctx); err != nil {
+		return err
+	}
+
+	if a.server != nil {
+		if err := a.server.Start(ctx); err != nil {
+			return fmt.Errorf("start server: %w", err)
+		}
 	}
 
 	<-ctx.Done()
@@ -64,9 +95,67 @@ func (a *App) Run(ctx context.Context) error {
 
 	a.log.InfoContext(shutdownCtx, "shutting down")
 
-	if err := a.server.Stop(shutdownCtx); err != nil {
-		return fmt.Errorf("stop server: %w", err)
+	if a.server != nil {
+		if err := a.server.Stop(shutdownCtx); err != nil {
+			return fmt.Errorf("stop server: %w", err)
+		}
+	}
+
+	if a.ch != nil {
+		if err := a.ch.Close(); err != nil {
+			return fmt.Errorf("close clickhouse clients: %w", err)
+		}
 	}
 
 	return nil
+}
+
+func (a *App) validateWatches(ctx context.Context) error {
+	if a.state == nil {
+		return nil
+	}
+
+	warnings, err := a.state.ValidateWatches(ctx)
+	for _, warning := range warnings {
+		a.log.WarnContext(ctx, "watch validation warning",
+			slog.String("kind", warning.Kind),
+			slog.String("code", warning.Code),
+			slog.String("node_id", warning.NodeID),
+			slog.String("message", warning.Message),
+		)
+	}
+	if err != nil {
+		return fmt.Errorf("validate watches: %w", err)
+	}
+
+	return nil
+}
+
+func clickHouseClientConfig(cfg ClickHouseConfig) chclient.Config {
+	nodes := make([]chclient.NodeConfig, 0, len(cfg.Nodes))
+	for _, node := range cfg.Nodes {
+		nodes = append(nodes, chclient.NodeConfig{
+			Name:    node.Name,
+			Shard:   node.Shard,
+			Replica: node.Replica,
+			DSN:     node.DSN,
+		})
+	}
+
+	return chclient.Config{
+		DialTimeout: cfg.DialTimeout,
+		Nodes:       nodes,
+	}
+}
+
+func clusterStateWatches(watches []WatchConfig) []clusterstate.Watch {
+	stateWatches := make([]clusterstate.Watch, 0, len(watches))
+	for _, watch := range watches {
+		stateWatches = append(stateWatches, clusterstate.Watch{
+			Database: watch.Database,
+			Table:    watch.Table,
+		})
+	}
+
+	return stateWatches
 }
