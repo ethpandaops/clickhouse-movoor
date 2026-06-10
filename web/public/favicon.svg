@@ -1,63 +1,35 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-24 -24 272 248" fill="none">
-  <g opacity="0.5">
-    <path
-      d="M24 28 C20 92 36 170 68 174 C95 177 102 124 112 64 C122 124 129 177 156 174 C188 170 204 92 200 28"
-      stroke="#fbbf24"
-      stroke-opacity="0.2"
-      stroke-width="40"
-      stroke-linecap="square"
-      stroke-linejoin="miter"
-      stroke-miterlimit="5"
-    />
-    <path
-      d="M24 28 C20 92 36 170 68 174 C95 177 102 124 112 64 C122 124 129 177 156 174 C188 170 204 92 200 28"
-      stroke="#fbbf24"
-      stroke-opacity="0.34"
-      stroke-width="32"
-      stroke-linecap="square"
-      stroke-linejoin="miter"
-      stroke-miterlimit="5"
-    />
-    <animate
-      attributeName="opacity"
-      dur="3.2s"
-      repeatCount="indefinite"
-      keyTimes="0;0.03;0.06;0.09;0.12;0.48;0.5;0.52;1"
-      values="0.5;0.34;0.54;0.38;0.56;0.52;0.6;0.5;0.5"
-    />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <title>clickhouse-movoor</title>
+  <defs>
+    <clipPath id="tile">
+      <rect x="6" y="6" width="244" height="244" rx="54" />
+    </clipPath>
+  </defs>
+
+  <!-- terminal-black tile -->
+  <rect x="6" y="6" width="244" height="244" rx="54" fill="#000000" />
+
+  <g clip-path="url(#tile)">
+    <!-- hot partitions: stay local -->
+    <rect x="52" y="56" width="152" height="36" rx="10" fill="#00ff88" />
+    <rect x="52" y="110" width="152" height="36" rx="10" fill="#00ff88" />
+
+    <!-- cold partition: tiering out to object storage -->
+    <g>
+      <rect x="124" y="164" width="152" height="36" rx="10" fill="#ff33cc" />
+      <animateTransform
+        attributeName="transform"
+        type="translate"
+        dur="4.2s"
+        repeatCount="indefinite"
+        keyTimes="0;0.3;0.75;1"
+        values="-72 0;-72 0;132 0;132 0"
+        calcMode="spline"
+        keySplines="0 0 1 1;0.4 0 0.2 1;0 0 1 1"
+      />
+    </g>
   </g>
-  <g opacity="0.75">
-    <path
-      d="M24 28 C20 92 36 170 68 174 C95 177 102 124 112 64 C122 124 129 177 156 174 C188 170 204 92 200 28"
-      stroke="#fbbf24"
-      stroke-width="24.75"
-      stroke-linecap="square"
-      stroke-linejoin="miter"
-      stroke-miterlimit="5"
-    />
-    <animate
-      attributeName="opacity"
-      dur="2.6s"
-      repeatCount="indefinite"
-      keyTimes="0;0.02;0.04;0.06;0.08;0.12;0.5;0.52;0.72;1"
-      values="0.75;0.48;0.82;0.56;0.86;0.72;0.9;0.76;0.84;0.75"
-    />
-  </g>
-  <path
-    d="M24 28 C20 92 36 170 68 174 C95 177 102 124 112 68 C122 124 129 177 156 174 C188 170 204 92 200 28"
-    stroke="#101828"
-    stroke-opacity="0.32"
-    stroke-width="22"
-    stroke-linecap="square"
-    stroke-linejoin="miter"
-    shape-rendering="geometricPrecision"
-  />
-  <path
-    d="M24 28 C20 92 36 170 68 174 C95 177 102 124 112 68 C122 124 129 177 156 174 C188 170 204 92 200 28"
-    stroke="#ffffff"
-    stroke-width="18"
-    stroke-linecap="square"
-    stroke-linejoin="miter"
-    shape-rendering="geometricPrecision"
-  />
+
+  <!-- tile border -->
+  <rect x="6" y="6" width="244" height="244" rx="54" stroke="#155e3a" stroke-width="8" />
 </svg>

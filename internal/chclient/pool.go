@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -18,7 +20,11 @@ const (
 // ClickHouse node, not a failover group.
 type Config struct {
 	DialTimeout time.Duration
-	Nodes       []NodeConfig
+	// QueryTimeout, when set, is also enforced server-side via the
+	// max_execution_time setting: a client context deadline alone releases the
+	// connection but lets the query run to completion on the server.
+	QueryTimeout time.Duration
+	Nodes        []NodeConfig
 }
 
 // NodeConfig describes one physical ClickHouse node.
@@ -57,7 +63,7 @@ func NewPool(cfg Config) (*Pool, error) {
 
 	clients := make([]Client, 0, len(cfg.Nodes))
 	for i, node := range cfg.Nodes {
-		db, addr, err := openNode(node, cfg.DialTimeout)
+		db, addr, err := openNode(node, cfg.DialTimeout, cfg.QueryTimeout)
 		if err != nil {
 			err = errors.Join(err, closeClients(clients))
 
@@ -99,7 +105,7 @@ func (p *Pool) Close() error {
 	return closeClients(p.clients)
 }
 
-func openNode(node NodeConfig, dialTimeout time.Duration) (*sql.DB, string, error) {
+func openNode(node NodeConfig, dialTimeout time.Duration, queryTimeout time.Duration) (*sql.DB, string, error) {
 	if node.Name == "" {
 		return nil, "", errors.New("name is required")
 	}
@@ -112,13 +118,21 @@ func openNode(node NodeConfig, dialTimeout time.Duration) (*sql.DB, string, erro
 
 	opts, err := clickhouse.ParseDSN(node.DSN)
 	if err != nil {
-		return nil, "", fmt.Errorf("parse dsn: %w", err)
+		return nil, "", fmt.Errorf("parse dsn: %w", RedactDSNError(err, node.DSN))
 	}
 	if len(opts.Addr) != 1 {
 		return nil, "", fmt.Errorf("dsn must contain exactly one address, got %d", len(opts.Addr))
 	}
 	if dialTimeout > 0 {
 		opts.DialTimeout = dialTimeout
+	}
+	if queryTimeout > 0 {
+		if opts.Settings == nil {
+			opts.Settings = clickhouse.Settings{}
+		}
+		if _, ok := opts.Settings["max_execution_time"]; !ok {
+			opts.Settings["max_execution_time"] = int(math.Ceil(queryTimeout.Seconds()))
+		}
 	}
 	if opts.MaxOpenConns == 0 {
 		opts.MaxOpenConns = defaultMaxOpenConns
@@ -128,6 +142,40 @@ func openNode(node NodeConfig, dialTimeout time.Duration) (*sql.DB, string, erro
 	}
 
 	return clickhouse.OpenDB(opts), opts.Addr[0], nil
+}
+
+// RedactDSN masks the password component of a DSN-like string so it is safe to
+// include in errors and logs.
+func RedactDSN(raw string) string {
+	rest := raw
+	prefix := ""
+	if schemeEnd := strings.Index(raw, "://"); schemeEnd >= 0 {
+		prefix = raw[:schemeEnd+3]
+		rest = raw[schemeEnd+3:]
+	}
+
+	at := strings.Index(rest, "@")
+	if at < 0 {
+		return raw
+	}
+
+	colon := strings.Index(rest[:at], ":")
+	if colon < 0 {
+		return raw
+	}
+
+	return prefix + rest[:colon+1] + "xxxxx" + rest[at:]
+}
+
+// RedactDSNError rewrites err's message so it does not echo credentials from
+// raw. The original error chain is intentionally dropped because wrapped
+// messages (for example *url.Error) embed the full DSN.
+func RedactDSNError(err error, raw string) error {
+	if err == nil {
+		return nil
+	}
+
+	return errors.New(strings.ReplaceAll(err.Error(), raw, RedactDSN(raw)))
 }
 
 func closeClients(clients []Client) error {

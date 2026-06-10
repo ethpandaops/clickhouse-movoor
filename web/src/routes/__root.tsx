@@ -2,6 +2,7 @@ import { type JSX } from 'react';
 import { createRootRoute, HeadContent, Link, Outlet } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '@/providers/ThemeProvider';
+import { Brand } from '@/components/Layout/Brand';
 import { ThemeToggle } from '@/components/Layout/ThemeToggle';
 
 const queryClient = new QueryClient({
@@ -19,13 +20,18 @@ function RootComponent(): JSX.Element {
       <ThemeProvider>
         <HeadContent />
         <div className="min-h-dvh bg-background text-foreground">
-          <header className="flex items-center justify-between border-b border-border bg-surface px-6 py-4">
-            <Link to="/" className="text-lg font-bold text-foreground">
-              clickhouse-movoor
-            </Link>
-            <ThemeToggle />
+          <header className="sticky top-0 z-40 border-b border-border bg-surface/80 backdrop-blur-sm">
+            <div className="mx-auto flex h-14 max-w-[1800px] items-center justify-between gap-4 px-4 sm:px-6">
+              <Link
+                to="/"
+                className="flex min-w-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+              >
+                <Brand />
+              </Link>
+              <ThemeToggle />
+            </div>
           </header>
-          <main className="p-6">
+          <main className="px-4 py-6 sm:px-6">
             <Outlet />
           </main>
         </div>

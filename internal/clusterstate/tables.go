@@ -1,4 +1,3 @@
-//nolint:govet,modernize,intrange // The system-table collectors keep ClickHouse scan loops explicit.
 package clusterstate
 
 import (
@@ -6,10 +5,17 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
+	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
 )
@@ -19,6 +25,11 @@ const (
 	severityWarning  = "warning"
 	severityInfo     = "info"
 )
+
+// defaultPartEventLookback bounds the system.part_log scan when the caller
+// gives no lower bound. part_log grows unbounded and is partitioned by month,
+// so an open-ended ORDER BY ... DESC would scan the whole log.
+const defaultPartEventLookback = 7 * 24 * time.Hour
 
 // TableState is one configured table as observed on one ClickHouse node.
 type TableState struct {
@@ -279,10 +290,22 @@ func (c *Collector) CollectTableColumns(ctx context.Context, watch Watch) Result
 	})
 }
 
-// CollectParts reads system.parts for one table from every node.
+// CollectParts reads system.parts for one table from every node, including
+// inactive parts left behind by merges.
 func (c *Collector) CollectParts(ctx context.Context, watch Watch) Result[Part] {
+	return c.collectPartsResult(ctx, watch, false)
+}
+
+// CollectActiveParts reads only active parts for one table from every node.
+// Placement aggregation and condition derivation never look at inactive
+// parts, which dominate row volume on merge-heavy tables.
+func (c *Collector) CollectActiveParts(ctx context.Context, watch Watch) Result[Part] {
+	return c.collectPartsResult(ctx, watch, true)
+}
+
+func (c *Collector) collectPartsResult(ctx context.Context, watch Watch, activeOnly bool) Result[Part] {
 	return collectPerNode(ctx, c, 32, func(ctx context.Context, client chclient.Client) ([]Part, *Warning) {
-		items, err := c.collectParts(ctx, client, watch)
+		items, err := c.collectParts(ctx, client, watch, activeOnly)
 		if err != nil {
 			return nil, queryWarning(client.Node.ID, "system_parts_query_failed", err)
 		}
@@ -335,12 +358,19 @@ func (c *Collector) CollectReplicationQueue(ctx context.Context) Result[Replicat
 	})
 }
 
-// CollectPartEvents reads recent system.part_log entries for configured watches from every node.
-func (c *Collector) CollectPartEvents(ctx context.Context) Result[PartEvent] {
+// CollectPartEvents reads recent system.part_log entries for configured
+// watches from every node. When from is nil the window defaults to the last
+// defaultPartEventLookback; to, when set, is an inclusive upper bound.
+func (c *Collector) CollectPartEvents(ctx context.Context, from *time.Time, to *time.Time) Result[PartEvent] {
+	lower := time.Now().Add(-defaultPartEventLookback)
+	if from != nil {
+		lower = *from
+	}
+
 	return collectPerNode(ctx, c, 64, func(ctx context.Context, client chclient.Client) ([]PartEvent, *Warning) {
 		items := make([]PartEvent, 0)
 		for _, watch := range c.watches {
-			watchItems, warning, err := c.collectPartEvents(ctx, client, watch)
+			watchItems, warning, err := c.collectPartEvents(ctx, client, watch, lower, to)
 			if warning != nil || err != nil {
 				if warning != nil {
 					return nil, warning
@@ -374,9 +404,9 @@ func (c *Collector) CollectOperations(ctx context.Context) Result[Operation] {
 		items = append(items, merges...)
 
 		for _, watch := range c.watches {
-			mutations, err := c.collectMutations(ctx, client, watch)
-			if err != nil {
-				return nil, queryWarning(client.Node.ID, "system_mutations_query_failed", err)
+			mutations, mutationsErr := c.collectMutations(ctx, client, watch)
+			if mutationsErr != nil {
+				return nil, queryWarning(client.Node.ID, "system_mutations_query_failed", mutationsErr)
 			}
 			for _, mutation := range mutations {
 				if mutation.IsDone {
@@ -385,9 +415,9 @@ func (c *Collector) CollectOperations(ctx context.Context) Result[Operation] {
 				items = append(items, operationFromMutation(mutation))
 			}
 
-			queueItems, err := c.collectReplicationQueue(ctx, client, watch)
-			if err != nil {
-				return nil, queryWarning(client.Node.ID, "system_replication_queue_query_failed", err)
+			queueItems, queueErr := c.collectReplicationQueue(ctx, client, watch)
+			if queueErr != nil {
+				return nil, queryWarning(client.Node.ID, "system_replication_queue_query_failed", queueErr)
 			}
 			for _, queueItem := range queueItems {
 				items = append(items, operationFromReplicationQueue(queueItem))
@@ -398,28 +428,17 @@ func (c *Collector) CollectOperations(ctx context.Context) Result[Operation] {
 	})
 }
 
-// CollectConditions derives operator conditions from the configured watches.
-func (c *Collector) CollectConditions(ctx context.Context) Result[Condition] {
+// TableConditions derives table-scoped conditions from already-collected
+// tables, plus freshly collected mutation and replication-queue state.
+// Callers that already hold a CollectTables result should use this instead of
+// CollectConditions so tables are not collected twice.
+func (c *Collector) TableConditions(ctx context.Context, tables Result[TableState]) Result[Condition] {
 	start := time.Now()
 	nodesExpected := len(c.clients())
 	conditions := make([]Condition, 0)
-	warnings := make([]Warning, 0)
+	warnings := appendWarnings(make([]Warning, 0), tables.Warnings...)
 
-	tables := c.CollectTables(ctx)
-	warnings = appendWarnings(warnings, tables.Warnings...)
 	conditions = append(conditions, c.tableConditions(tables.Items)...)
-
-	for _, watch := range c.watches {
-		parts := c.CollectParts(ctx, watch)
-		warnings = appendWarnings(warnings, parts.Warnings...)
-		conditions = append(conditions, partitionConditions(parts.Items)...)
-
-		detached := c.CollectDetachedParts(ctx, watch)
-		warnings = appendWarnings(warnings, detached.Warnings...)
-		for _, part := range detached.Items {
-			conditions = append(conditions, detachedPartCondition(part))
-		}
-	}
 
 	mutations := c.CollectMutations(ctx)
 	warnings = appendWarnings(warnings, mutations.Warnings...)
@@ -435,6 +454,57 @@ func (c *Collector) CollectConditions(ctx context.Context) Result[Condition] {
 		if item.LastException != nil && *item.LastException != "" {
 			conditions = append(conditions, replicationQueueExceptionCondition(item))
 		}
+	}
+
+	return result(start, nodesExpected, respondedNodes(nodesExpected, warnings), warnings, conditions)
+}
+
+// PartitionConditions derives partition-scoped conditions for one watch from
+// already-collected parts, plus freshly collected detached-part state.
+// Callers that already hold a CollectActiveParts result should use this
+// instead of CollectConditions so parts are not collected twice.
+func (c *Collector) PartitionConditions(ctx context.Context, watch Watch, parts Result[Part]) Result[Condition] {
+	start := time.Now()
+	nodesExpected := len(c.clients())
+	warnings := appendWarnings(make([]Warning, 0), parts.Warnings...)
+
+	conditions := partitionConditions(parts.Items)
+
+	detached := c.CollectDetachedParts(ctx, watch)
+	warnings = appendWarnings(warnings, detached.Warnings...)
+	for _, part := range detached.Items {
+		conditions = append(conditions, detachedPartCondition(part))
+	}
+
+	return result(start, nodesExpected, respondedNodes(nodesExpected, warnings), warnings, conditions)
+}
+
+// CollectConditions derives operator conditions from the configured watches.
+// The table-scoped stage and the per-watch partition-scoped stages run
+// concurrently; each already fans out per node internally, with per-node
+// connection pools bounding query concurrency.
+func (c *Collector) CollectConditions(ctx context.Context) Result[Condition] {
+	start := time.Now()
+	nodesExpected := len(c.clients())
+
+	stages := make(chan Result[Condition], len(c.watches)+1)
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		stages <- c.TableConditions(ctx, c.CollectTables(ctx))
+	})
+	for _, watch := range c.watches {
+		wg.Go(func() {
+			stages <- c.PartitionConditions(ctx, watch, c.CollectActiveParts(ctx, watch))
+		})
+	}
+	wg.Wait()
+	close(stages)
+
+	conditions := make([]Condition, 0)
+	warnings := make([]Warning, 0)
+	for stage := range stages {
+		conditions = append(conditions, stage.Items...)
+		warnings = appendWarnings(warnings, stage.Warnings...)
 	}
 
 	for _, warning := range warnings {
@@ -612,7 +682,7 @@ func (c *Collector) collectTableColumns(ctx context.Context, client chclient.Cli
 			primaryKey   uint8
 			samplingKey  uint8
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&column.Name,
 			&column.Position,
 			&column.Type,
@@ -624,8 +694,8 @@ func (c *Collector) collectTableColumns(ctx context.Context, client chclient.Cli
 			&sortingKey,
 			&primaryKey,
 			&samplingKey,
-		); err != nil {
-			return NodeColumns{}, err
+		); scanErr != nil {
+			return NodeColumns{}, scanErr
 		}
 
 		column.Kind = columnKind(defaultKind)
@@ -638,16 +708,21 @@ func (c *Collector) collectTableColumns(ctx context.Context, client chclient.Cli
 		column.IsInSamplingKey = samplingKey != 0
 		item.Columns = append(item.Columns, column)
 	}
-	if err := rows.Err(); err != nil {
-		return NodeColumns{}, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return NodeColumns{}, rowsErr
 	}
 
 	return item, nil
 }
 
 //nolint:funlen // system.parts has many fields; keeping the scan in one place avoids lossy mapping.
-func (c *Collector) collectParts(ctx context.Context, client chclient.Client, watch Watch) ([]Part, error) {
-	rows, err := client.DB.QueryContext(ctx, `
+func (c *Collector) collectParts(
+	ctx context.Context,
+	client chclient.Client,
+	watch Watch,
+	activeOnly bool,
+) ([]Part, error) {
+	const partsQuery = `
 		SELECT
 			database,
 			table,
@@ -682,8 +757,17 @@ func (c *Collector) collectParts(ctx context.Context, client chclient.Client, wa
 			default_compression_codec
 		FROM system.parts
 		WHERE database = ? AND table = ?
+	`
+	const partsQueryTail = `
 		ORDER BY active DESC, partition_id, name
-	`, watch.Database, watch.Table)
+	`
+
+	query := partsQuery + partsQueryTail
+	if activeOnly {
+		query = partsQuery + ` AND active` + partsQueryTail
+	}
+
+	rows, err := client.DB.QueryContext(ctx, query, watch.Database, watch.Table)
 	if err != nil {
 		return nil, err
 	}
@@ -700,7 +784,7 @@ func (c *Collector) collectParts(ctx context.Context, client chclient.Client, wa
 			deleteTTLInfoMin time.Time
 			deleteTTLInfoMax time.Time
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&part.Database,
 			&part.Table,
 			&part.Partition,
@@ -732,8 +816,8 @@ func (c *Collector) collectParts(ctx context.Context, client chclient.Client, wa
 			&deleteTTLInfoMin,
 			&deleteTTLInfoMax,
 			&part.DefaultCompressionCodec,
-		); err != nil {
-			return nil, err
+		); scanErr != nil {
+			return nil, scanErr
 		}
 		part.Node = client.Node
 		part.Active = active != 0
@@ -744,8 +828,8 @@ func (c *Collector) collectParts(ctx context.Context, client chclient.Client, wa
 		part.DeleteTTLInfoMax = nonZeroTimePtr(deleteTTLInfoMax)
 		items = append(items, part)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	return items, nil
@@ -785,7 +869,7 @@ func (c *Collector) collectDetachedParts(ctx context.Context, client chclient.Cl
 			maxBlockNumber sql.NullInt64
 			level          sql.NullInt64
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&part.Database,
 			&part.Table,
 			&partitionID,
@@ -798,8 +882,8 @@ func (c *Collector) collectDetachedParts(ctx context.Context, client chclient.Cl
 			&minBlockNumber,
 			&maxBlockNumber,
 			&level,
-		); err != nil {
-			return nil, err
+		); scanErr != nil {
+			return nil, scanErr
 		}
 		part.Node = client.Node
 		part.PartitionID = nullableStringPtr(partitionID)
@@ -809,8 +893,8 @@ func (c *Collector) collectDetachedParts(ctx context.Context, client chclient.Cl
 		part.Level = nullableUint64Ptr(level)
 		items = append(items, part)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	return items, nil
@@ -855,7 +939,7 @@ func (c *Collector) collectMutations(ctx context.Context, client chclient.Client
 			latestFailTime   time.Time
 			latestFailReason string
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&mutation.Database,
 			&mutation.Table,
 			&mutation.MutationID,
@@ -870,8 +954,8 @@ func (c *Collector) collectMutations(ctx context.Context, client chclient.Client
 			&latestFailedPart,
 			&latestFailTime,
 			&latestFailReason,
-		); err != nil {
-			return nil, err
+		); scanErr != nil {
+			return nil, scanErr
 		}
 		mutation.Node = client.Node
 		mutation.IsDone = isDone != 0
@@ -886,8 +970,8 @@ func (c *Collector) collectMutations(ctx context.Context, client chclient.Client
 		}
 		items = append(items, mutation)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	return items, nil
@@ -941,7 +1025,7 @@ func (c *Collector) collectReplicationQueue(ctx context.Context, client chclient
 			postponeReason       string
 			lastException        string
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&item.Database,
 			&item.Table,
 			&item.ReplicaName,
@@ -961,8 +1045,8 @@ func (c *Collector) collectReplicationQueue(ctx context.Context, client chclient
 			&numPostponed,
 			&postponeReason,
 			&lastException,
-		); err != nil {
-			return nil, err
+		); scanErr != nil {
+			return nil, scanErr
 		}
 		item.Node = client.Node
 		item.Position = uint64(position)
@@ -982,15 +1066,23 @@ func (c *Collector) collectReplicationQueue(ctx context.Context, client chclient
 		}
 		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	return items, nil
 }
 
-func (c *Collector) collectPartEvents(ctx context.Context, client chclient.Client, watch Watch) ([]PartEvent, *Warning, error) {
-	rows, err := client.DB.QueryContext(ctx, `
+func (c *Collector) collectPartEvents(
+	ctx context.Context,
+	client chclient.Client,
+	watch Watch,
+	from time.Time,
+	to *time.Time,
+) ([]PartEvent, *Warning, error) {
+	// event_date >= toDate(from) prunes part_log's monthly partitions before
+	// the event_time filter narrows within them.
+	const partEventQuery = `
 		SELECT
 			database,
 			table,
@@ -1012,11 +1104,24 @@ func (c *Collector) collectPartEvents(ctx context.Context, client chclient.Clien
 			exception
 		FROM system.part_log
 		WHERE database = ? AND table = ?
+			AND event_date >= toDate(?)
+			AND event_time >= ?
+	`
+	const partEventQueryTail = `
 		ORDER BY event_time_microseconds DESC
 		LIMIT 1000
-	`, watch.Database, watch.Table)
+	`
+
+	query := partEventQuery + partEventQueryTail
+	args := []any{watch.Database, watch.Table, from, from}
+	if to != nil {
+		query = partEventQuery + ` AND event_time <= ?` + partEventQueryTail
+		args = append(args, *to)
+	}
+
+	rows, err := client.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNKNOWN_TABLE") || strings.Contains(err.Error(), "system.part_log") {
+		if isUnknownTableError(err) {
 			return nil, &Warning{
 				Kind:    warningKindCapability,
 				Code:    "part_log_unavailable",
@@ -1037,7 +1142,7 @@ func (c *Collector) collectPartEvents(ctx context.Context, client chclient.Clien
 			errorCode uint16
 			exception string
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&event.Database,
 			&event.Table,
 			&event.Partition,
@@ -1056,8 +1161,8 @@ func (c *Collector) collectPartEvents(ctx context.Context, client chclient.Clien
 			&diskName,
 			&errorCode,
 			&exception,
-		); err != nil {
-			return nil, nil, err
+		); scanErr != nil {
+			return nil, nil, scanErr
 		}
 		event.Node = client.Node
 		event.TargetDisk = nonEmptyStringPtr(diskName)
@@ -1065,8 +1170,8 @@ func (c *Collector) collectPartEvents(ctx context.Context, client chclient.Clien
 		event.Exception = nonEmptyStringPtr(exception)
 		items = append(items, event)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, nil, rowsErr
 	}
 
 	return items, nil, nil
@@ -1110,8 +1215,8 @@ func (c *Collector) collectMoveOperations(ctx context.Context, client chclient.C
 			partSize    uint64
 			threadID    uint64
 		)
-		if err := rows.Scan(&database, &table, &partition, &partitionID, &elapsed, &targetDisk, &partName, &partSize, &threadID); err != nil {
-			return nil, err
+		if scanErr := rows.Scan(&database, &table, &partition, &partitionID, &elapsed, &targetDisk, &partName, &partSize, &threadID); scanErr != nil {
+			return nil, scanErr
 		}
 		if !c.isWatched(database, table) {
 			continue
@@ -1133,8 +1238,8 @@ func (c *Collector) collectMoveOperations(ctx context.Context, client chclient.C
 			BytesTotal:     &partSize,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	return items, nil
@@ -1175,7 +1280,7 @@ func (c *Collector) collectMergeOperations(ctx context.Context, client chclient.
 			totalBytes     uint64
 			processedBytes uint64
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&database,
 			&table,
 			&partition,
@@ -1186,8 +1291,8 @@ func (c *Collector) collectMergeOperations(ctx context.Context, client chclient.
 			&isMutation,
 			&totalBytes,
 			&processedBytes,
-		); err != nil {
-			return nil, err
+		); scanErr != nil {
+			return nil, scanErr
 		}
 		if !c.isWatched(database, table) {
 			continue
@@ -1213,8 +1318,8 @@ func (c *Collector) collectMergeOperations(ctx context.Context, client chclient.
 			BytesProcessed: &processedBytes,
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	return items, nil
@@ -1281,16 +1386,13 @@ func collectPerNode[T any](
 	results := make(chan nodeItems, len(clients))
 	var wg sync.WaitGroup
 	for _, client := range clients {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			queryCtx, cancel := c.queryContext(ctx)
 			defer cancel()
 
-			items, warning := fn(queryCtx, client)
-			results <- nodeItems{items: items, warning: warning}
-		}()
+			collected, warning := fn(queryCtx, client)
+			results <- nodeItems{items: collected, warning: warning}
+		})
 	}
 
 	wg.Wait()
@@ -1324,20 +1426,45 @@ func queryWarning(nodeID string, code string, err error) *Warning {
 	}
 }
 
+// isReachabilityError reports whether err means the node could not be reached
+// at all, as opposed to the node responding with a query error. Context
+// expiry is classified as a query error: the node may be healthy but slow.
 func isReachabilityError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return false
+	}
 
+	// The server responded with an exception, so it is reachable.
+	if _, ok := errors.AsType[*clickhouse.Exception](err); ok {
+		return false
+	}
+
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+
+	// Dial failures, DNS errors, resets, and i/o timeouts all surface as
+	// net.Error (typically *net.OpError) from the driver.
+	if _, ok := errors.AsType[net.Error](err); ok {
+		return true
+	}
+
+	if errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+
+	// Fallback for driver paths that stringify the underlying network error.
 	message := strings.ToLower(err.Error())
 	for _, needle := range []string{
-		"connect: connection refused",
 		"connection refused",
-		"i/o timeout",
 		"no such host",
 		"connection reset",
 		"broken pipe",
-		"unexpected eof",
 	} {
 		if strings.Contains(message, needle) {
 			return true
@@ -1345,6 +1472,17 @@ func isReachabilityError(err error) bool {
 	}
 
 	return false
+}
+
+// chErrCodeUnknownTable is ClickHouse server error code UNKNOWN_TABLE.
+const chErrCodeUnknownTable = 60
+
+// isUnknownTableError reports whether err is the server telling us the queried
+// table does not exist (for example system.part_log before any part activity).
+func isUnknownTableError(err error) bool {
+	exception, ok := errors.AsType[*clickhouse.Exception](err)
+
+	return ok && exception.Code == chErrCodeUnknownTable
 }
 
 func (c *Collector) isWatched(database string, table string) bool {
@@ -1620,13 +1758,10 @@ func warningKey(warning Warning) string {
 }
 
 func mutationBlockNumbers(partitionIDs []string, numbers []int64) []MutationBlockNumber {
-	limit := len(partitionIDs)
-	if len(numbers) < limit {
-		limit = len(numbers)
-	}
+	limit := min(len(partitionIDs), len(numbers))
 
 	blockNumbers := make([]MutationBlockNumber, 0, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		blockNumbers = append(blockNumbers, MutationBlockNumber{
 			PartitionID: partitionIDs[i],
 			Number:      uint64FromInt64(numbers[i]),
@@ -1738,22 +1873,5 @@ func diskSignature(disks map[string]struct{}) string {
 }
 
 func sortedKeys(values map[string]struct{}) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sortStrings(keys)
-
-	return keys
-}
-
-func sortStrings(values []string) {
-	if len(values) < 2 {
-		return
-	}
-	for i := 1; i < len(values); i++ {
-		for j := i; j > 0 && values[j] < values[j-1]; j-- {
-			values[j], values[j-1] = values[j-1], values[j]
-		}
-	}
+	return slices.Sorted(maps.Keys(values))
 }

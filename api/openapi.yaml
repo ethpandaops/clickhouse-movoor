@@ -435,9 +435,11 @@ paths:
       operationId: listPartEvents
       summary: List recent part events
       description: |
-        Returns recent part history from system.part_log when enabled. If a node
-        is reachable but part_log is unavailable, return partial data with a
-        capability warning.
+        Returns recent part history from system.part_log when enabled. The
+        scan is bounded to the requested from/to window (defaulting to the
+        last 7 days) and to the newest 1000 events per table per node. If a
+        node is reachable but part_log is unavailable, return partial data
+        with a capability warning.
       tags:
         - operations
       parameters:
@@ -601,7 +603,9 @@ components:
     FromQuery:
       name: from
       in: query
-      description: Include events at or after this RFC3339 timestamp.
+      description: |
+        Include events at or after this RFC3339 timestamp. When omitted, the
+        window defaults to the last 7 days.
       schema:
         type: string
         format: date-time

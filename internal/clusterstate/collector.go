@@ -1,4 +1,3 @@
-//nolint:govet,modernize // The ClickHouse row-scan code keeps local err scopes and pointer helpers explicit.
 package clusterstate
 
 import (
@@ -116,11 +115,9 @@ func (c *Collector) CollectNodes(ctx context.Context) Result[NodeStatus] {
 	results := make(chan nodeResult, len(clients))
 	var wg sync.WaitGroup
 	for _, client := range clients {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			results <- c.collectNode(ctx, client)
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -151,12 +148,10 @@ func (c *Collector) CollectDisks(ctx context.Context) Result[Disk] {
 	results := make(chan diskResult, len(clients))
 	var wg sync.WaitGroup
 	for _, client := range clients {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			nodeDisks, warning := c.collectDisks(ctx, client)
 			results <- diskResult{items: nodeDisks, warning: warning}
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -253,7 +248,7 @@ func (c *Collector) collectDisks(ctx context.Context, client chclient.Client) ([
 			isRemote        uint8
 			isBroken        uint8
 		)
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&disk.Name,
 			&disk.Path,
 			&disk.CachePath,
@@ -264,11 +259,11 @@ func (c *Collector) collectDisks(ctx context.Context, client chclient.Client) ([
 			&disk.ObjectStorageType,
 			&isRemote,
 			&isBroken,
-		); err != nil {
+		); scanErr != nil {
 			return nil, &Warning{
 				Kind:    warningKindQueryError,
 				Code:    "system_disks_scan_failed",
-				Message: err.Error(),
+				Message: scanErr.Error(),
 				NodeID:  client.Node.ID,
 			}
 		}
@@ -280,8 +275,8 @@ func (c *Collector) collectDisks(ctx context.Context, client chclient.Client) ([
 		setDiskCapacity(&disk, freeSpace, totalSpace, unreservedSpace)
 		disks = append(disks, disk)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, queryWarning(client.Node.ID, "system_disks_rows_failed", err)
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, queryWarning(client.Node.ID, "system_disks_rows_failed", rowsErr)
 	}
 
 	return disks, nil
@@ -307,18 +302,18 @@ func (c *Collector) collectWatchedPartBytesByDisk(ctx context.Context, client ch
 				disk string
 				used uint64
 			)
-			if err := rows.Scan(&disk, &used); err != nil {
+			if scanErr := rows.Scan(&disk, &used); scanErr != nil {
 				_ = rows.Close()
 
-				return nil, err
+				return nil, scanErr
 			}
 			usedByDisk[disk] += used
 		}
-		if err := rows.Close(); err != nil {
-			return nil, err
+		if closeErr := rows.Close(); closeErr != nil {
+			return nil, closeErr
 		}
-		if err := rows.Err(); err != nil {
-			return nil, err
+		if rowsErr := rows.Err(); rowsErr != nil {
+			return nil, rowsErr
 		}
 	}
 
@@ -361,11 +356,7 @@ func setDiskCapacity(disk *Disk, freeSpace uint64, totalSpace uint64, unreserved
 	}
 
 	disk.CapacityKnown = true
-	disk.FreeSpaceBytes = uint64Ptr(freeSpace)
-	disk.TotalSpaceBytes = uint64Ptr(totalSpace)
-	disk.UnreservedSpaceBytes = uint64Ptr(unreservedSpace)
-}
-
-func uint64Ptr(v uint64) *uint64 {
-	return &v
+	disk.FreeSpaceBytes = new(freeSpace)
+	disk.TotalSpaceBytes = new(totalSpace)
+	disk.UnreservedSpaceBytes = new(unreservedSpace)
 }

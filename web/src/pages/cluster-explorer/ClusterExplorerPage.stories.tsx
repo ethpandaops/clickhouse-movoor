@@ -40,7 +40,7 @@ export const Populated: Story = {
     const canvas = within(canvasElement);
 
     await waitFor(() => {
-      expect(canvas.getByText('movoor_dev.test_generic_network_month_local')).toBeInTheDocument();
+      expect(canvas.getByTitle('movoor_dev.test_generic_network_month_local')).toBeInTheDocument();
     });
     await waitFor(() => {
       expect(canvas.getByText('shard0-replica0')).toBeInTheDocument();
@@ -79,7 +79,7 @@ export const Empty: Story = {
   },
   play: async ({ canvasElement }) => {
     await waitFor(() => {
-      expect(canvasElement.textContent).toContain('No watched tables reported.');
+      expect(canvasElement.textContent).toContain('No watched tables');
     });
   },
 };

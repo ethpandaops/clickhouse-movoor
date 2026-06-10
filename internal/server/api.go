@@ -1,8 +1,11 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"net/http"
+	"slices"
+	"time"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/clusterstate"
 )
@@ -16,12 +19,15 @@ type StateReader interface {
 	CollectTables(rctx context.Context) clusterstate.Result[clusterstate.TableState]
 	CollectTableColumns(rctx context.Context, watch clusterstate.Watch) clusterstate.Result[clusterstate.NodeColumns]
 	CollectParts(rctx context.Context, watch clusterstate.Watch) clusterstate.Result[clusterstate.Part]
+	CollectActiveParts(rctx context.Context, watch clusterstate.Watch) clusterstate.Result[clusterstate.Part]
 	CollectDetachedParts(rctx context.Context, watch clusterstate.Watch) clusterstate.Result[clusterstate.DetachedPart]
 	CollectMutations(rctx context.Context) clusterstate.Result[clusterstate.Mutation]
 	CollectReplicationQueue(rctx context.Context) clusterstate.Result[clusterstate.ReplicationQueueItem]
-	CollectPartEvents(rctx context.Context) clusterstate.Result[clusterstate.PartEvent]
+	CollectPartEvents(rctx context.Context, from *time.Time, to *time.Time) clusterstate.Result[clusterstate.PartEvent]
 	CollectOperations(rctx context.Context) clusterstate.Result[clusterstate.Operation]
 	CollectConditions(rctx context.Context) clusterstate.Result[clusterstate.Condition]
+	TableConditions(rctx context.Context, tables clusterstate.Result[clusterstate.TableState]) clusterstate.Result[clusterstate.Condition]
+	PartitionConditions(rctx context.Context, watch clusterstate.Watch, parts clusterstate.Result[clusterstate.Part]) clusterstate.Result[clusterstate.Condition]
 }
 
 type problemError struct {
@@ -41,18 +47,20 @@ func (s *server) handleNodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nodeID := r.URL.Query().Get("nodeId")
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]nodeResponse, 0, len(result.Items))
 	for _, item := range result.Items {
 		if nodeID != "" && item.Node.ID != nodeID {
 			continue
 		}
 		items = append(items, apiNode(item))
 	}
-	sortMapItems(items, "nodeId", "")
+	slices.SortStableFunc(items, func(a, b nodeResponse) int {
+		return cmp.Compare(a.NodeID, b.NodeID)
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
+	s.writeJSON(w, r, listResponse[nodeResponse]{
+		Collection: collectionMeta(result),
+		Items:      items,
 	})
 }
 
@@ -73,7 +81,7 @@ func (s *server) handleStorageDisks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]diskResponse, 0, len(result.Items))
 	for _, item := range result.Items {
 		if query.Get("nodeId") != "" && item.Node.ID != query.Get("nodeId") {
 			continue
@@ -89,11 +97,13 @@ func (s *server) handleStorageDisks(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, apiDisk(item))
 	}
-	sortMapItems(items, "nodeId", "disk")
+	slices.SortStableFunc(items, func(a, b diskResponse) int {
+		return cmp.Or(cmp.Compare(a.NodeID, b.NodeID), cmp.Compare(a.Disk, b.Disk))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
+	s.writeJSON(w, r, listResponse[diskResponse]{
+		Collection: collectionMeta(result),
+		Items:      items,
 	})
 }
 
@@ -119,9 +129,9 @@ func (s *server) handleTables(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conditions := collectConditionsBestEffort(r, state)
+	conditions := state.TableConditions(r.Context(), result).Items
 	grouped := aggregateTables(result.Items, conditions)
-	items := make([]map[string]any, 0, len(grouped))
+	items := make([]tableSummaryResponse, 0, len(grouped))
 	for _, item := range grouped {
 		if query.Get("database") != "" && item.database != query.Get("database") {
 			continue
@@ -143,11 +153,13 @@ func (s *server) handleTables(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, apiTableListItem(item))
 	}
-	sortMapItems(items, "database", "table")
+	slices.SortStableFunc(items, func(a, b tableSummaryResponse) int {
+		return cmp.Or(cmp.Compare(a.Database, b.Database), cmp.Compare(a.Table, b.Table))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
+	s.writeJSON(w, r, listResponse[tableSummaryResponse]{
+		Collection: collectionMeta(result),
+		Items:      items,
 	})
 }
 
@@ -162,7 +174,7 @@ func (s *server) handleTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conditions := collectConditionsBestEffort(r, state)
+	conditions := state.TableConditions(r.Context(), result).Items
 	item, found := aggregateTableDetail(result.Items, conditions, watch)
 	if !found {
 		s.writeProblem(w, r, problemDetails{
@@ -176,9 +188,9 @@ func (s *server) handleTable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"item":       apiTableDetail(item),
+	s.writeJSON(w, r, tableDetailEnvelope{
+		Collection: collectionMeta(result),
+		Item:       apiTableDetail(item),
 	})
 }
 
@@ -194,13 +206,12 @@ func (s *server) handleTableColumns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := r.URL.Query()
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]nodeColumnsResponse, 0, len(result.Items))
 	for _, item := range result.Items {
 		if query.Get("nodeId") != "" && item.Node.ID != query.Get("nodeId") {
 			continue
 		}
-		nodeColumns := apiNodeRef(item.Node)
-		columns := make([]map[string]any, 0, len(item.Columns))
+		columns := make([]columnResponse, 0, len(item.Columns))
 		for _, column := range item.Columns {
 			if query.Get("name") != "" && column.Name != query.Get("name") {
 				continue
@@ -210,18 +221,22 @@ func (s *server) handleTableColumns(w http.ResponseWriter, r *http.Request) {
 			}
 			columns = append(columns, apiColumn(column))
 		}
-		nodeColumns["columns"] = columns
-		nodeColumns["conditions"] = apiConditions(item.Conditions)
-		items = append(items, nodeColumns)
+		items = append(items, nodeColumnsResponse{
+			nodeRef:    apiNodeRef(item.Node),
+			Columns:    columns,
+			Conditions: apiConditions(item.Conditions),
+		})
 	}
-	sortMapItems(items, "nodeId", "")
+	slices.SortStableFunc(items, func(a, b nodeColumnsResponse) int {
+		return cmp.Compare(a.NodeID, b.NodeID)
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"database":   watch.Database,
-		"table":      watch.Table,
-		"items":      items,
-		"conditions": []map[string]any{},
+	s.writeJSON(w, r, columnsEnvelope{
+		Collection: collectionMeta(result),
+		Database:   watch.Database,
+		Table:      watch.Table,
+		Items:      items,
+		Conditions: []conditionResponse{},
 	})
 }
 
@@ -241,15 +256,15 @@ func (s *server) handleTablePartitions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := state.CollectParts(r.Context(), watch)
+	result := state.CollectActiveParts(r.Context(), watch)
 	if s.writeNoResponders(w, r, result.NodesExpected, result.NodesResponded) {
 		return
 	}
 
-	conditions := collectConditionsBestEffort(r, state)
+	conditions := state.PartitionConditions(r.Context(), watch, result).Items
 	partitions := aggregatePartitions(result.Items, conditions)
 	query := r.URL.Query()
-	items := make([]map[string]any, 0, len(partitions))
+	items := make([]partitionResponse, 0, len(partitions))
 	for _, partition := range partitions {
 		if !partitionMatches(query, partition) {
 			continue
@@ -259,11 +274,13 @@ func (s *server) handleTablePartitions(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, apiPartition(partition))
 	}
-	sortMapItems(items, "partitionId", "")
+	slices.SortStableFunc(items, func(a, b partitionResponse) int {
+		return cmp.Compare(a.PartitionID, b.PartitionID)
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
+	s.writeJSON(w, r, listResponse[partitionResponse]{
+		Collection: collectionMeta(result),
+		Items:      items,
 	})
 }
 
@@ -293,7 +310,7 @@ func (s *server) handleTableParts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]partResponse, 0, len(result.Items))
 	for _, item := range result.Items {
 		if !nodePartMatches(query, item.Node) {
 			continue
@@ -318,13 +335,15 @@ func (s *server) handleTableParts(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, apiPart(item))
 	}
-	sortMapItems(items, "nodeId", "partName")
+	slices.SortStableFunc(items, func(a, b partResponse) int {
+		return cmp.Or(cmp.Compare(a.NodeID, b.NodeID), cmp.Compare(a.PartName, b.PartName))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"database":   watch.Database,
-		"table":      watch.Table,
-		"items":      items,
+	s.writeJSON(w, r, tableScopedListResponse[partResponse]{
+		Collection: collectionMeta(result),
+		Database:   watch.Database,
+		Table:      watch.Table,
+		Items:      items,
 	})
 }
 
@@ -340,7 +359,7 @@ func (s *server) handleDetachedParts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]detachedPartResponse, 0, len(result.Items))
 	reasonCounts := make(map[string]int)
 	for _, item := range result.Items {
 		if !nodePartMatches(query, item.Node) {
@@ -361,16 +380,18 @@ func (s *server) handleDetachedParts(w http.ResponseWriter, r *http.Request) {
 		reasonCounts[deref(item.Reason)]++
 		items = append(items, apiDetachedPart(item))
 	}
-	sortMapItems(items, "nodeId", "partName")
+	slices.SortStableFunc(items, func(a, b detachedPartResponse) int {
+		return cmp.Or(cmp.Compare(a.NodeID, b.NodeID), cmp.Compare(a.PartName, b.PartName))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"database":   watch.Database,
-		"table":      watch.Table,
-		"items":      items,
-		"counts": map[string]any{
-			"total":    len(items),
-			"byReason": reasonCounts,
+	s.writeJSON(w, r, detachedPartsEnvelope{
+		Collection: collectionMeta(result),
+		Database:   watch.Database,
+		Table:      watch.Table,
+		Items:      items,
+		Counts: detachedPartsCounts{
+			Total:    len(items),
+			ByReason: reasonCounts,
 		},
 	})
 }
@@ -392,7 +413,7 @@ func (s *server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]operationResponse, 0, len(result.Items))
 	counts := operationKindCounts()
 	for _, item := range result.Items {
 		if query.Get("kind") != "" && item.Kind != query.Get("kind") {
@@ -413,14 +434,16 @@ func (s *server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		counts[item.Kind]++
 		items = append(items, apiOperation(item))
 	}
-	sortMapItems(items, "nodeId", "operationId")
+	slices.SortStableFunc(items, func(a, b operationResponse) int {
+		return cmp.Or(cmp.Compare(a.NodeID, b.NodeID), cmp.Compare(a.OperationID, b.OperationID))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
-		"counts": map[string]any{
-			"total":  len(items),
-			"byKind": counts,
+	s.writeJSON(w, r, operationsEnvelope{
+		Collection: collectionMeta(result),
+		Items:      items,
+		Counts: operationsCounts{
+			Total:  len(items),
+			ByKind: counts,
 		},
 	})
 }
@@ -446,7 +469,7 @@ func (s *server) handleMutations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]mutationResponse, 0, len(result.Items))
 	unfinishedCount := 0
 	failedCount := 0
 	for _, item := range result.Items {
@@ -477,15 +500,17 @@ func (s *server) handleMutations(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, apiMutation(item))
 	}
-	sortMapItems(items, "nodeId", "mutationId")
+	slices.SortStableFunc(items, func(a, b mutationResponse) int {
+		return cmp.Or(cmp.Compare(a.NodeID, b.NodeID), cmp.Compare(a.MutationID, b.MutationID))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
-		"counts": map[string]any{
-			"total":      len(items),
-			"unfinished": unfinishedCount,
-			"failed":     failedCount,
+	s.writeJSON(w, r, mutationsEnvelope{
+		Collection: collectionMeta(result),
+		Items:      items,
+		Counts: mutationsCounts{
+			Total:      len(items),
+			Unfinished: unfinishedCount,
+			Failed:     failedCount,
 		},
 	})
 }
@@ -511,7 +536,7 @@ func (s *server) handleReplicationQueue(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]replicationQueueResponse, 0, len(result.Items))
 	byType := make(map[string]int)
 	executingCount := 0
 	exceptionCount := 0
@@ -544,16 +569,18 @@ func (s *server) handleReplicationQueue(w http.ResponseWriter, r *http.Request) 
 		}
 		items = append(items, apiReplicationQueueItem(item))
 	}
-	sortMapItems(items, "nodeId", "operationId")
+	slices.SortStableFunc(items, func(a, b replicationQueueResponse) int {
+		return cmp.Or(cmp.Compare(a.NodeID, b.NodeID), cmp.Compare(a.OperationID, b.OperationID))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
-		"counts": map[string]any{
-			"total":              len(items),
-			"currentlyExecuting": executingCount,
-			"withException":      exceptionCount,
-			"byType":             byType,
+	s.writeJSON(w, r, replicationQueueEnvelope{
+		Collection: collectionMeta(result),
+		Items:      items,
+		Counts: replicationQueueCounts{
+			Total:              len(items),
+			CurrentlyExecuting: executingCount,
+			WithException:      exceptionCount,
+			ByType:             byType,
 		},
 	})
 }
@@ -574,12 +601,12 @@ func (s *server) handlePartEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	query := r.URL.Query()
-	result := state.CollectPartEvents(r.Context())
+	result := state.CollectPartEvents(r.Context(), from, to)
 	if s.writeNoResponders(w, r, result.NodesExpected, result.NodesResponded) {
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]partEventResponse, 0, len(result.Items))
 	byEventType := make(map[string]int)
 	errorCount := 0
 	for _, item := range result.Items {
@@ -613,20 +640,21 @@ func (s *server) handlePartEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		items = append(items, apiPartEvent(item))
 	}
-	sortMapItems(items, "eventTime", "eventId")
+	slices.SortStableFunc(items, func(a, b partEventResponse) int {
+		return cmp.Or(a.EventTime.Compare(b.EventTime), cmp.Compare(a.EventID, b.EventID))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
-		"counts": map[string]any{
-			"total":       len(items),
-			"byEventType": byEventType,
-			"withErrors":  errorCount,
+	s.writeJSON(w, r, partEventsEnvelope{
+		Collection: collectionMeta(result),
+		Items:      items,
+		Counts: partEventsCounts{
+			Total:       len(items),
+			ByEventType: byEventType,
+			WithErrors:  errorCount,
 		},
 	})
 }
 
-//nolint:gocognit // The handler mirrors the explicit list filter contract.
 func (s *server) handleConditions(w http.ResponseWriter, r *http.Request) {
 	state, ok := s.requireState(w, r)
 	if !ok {
@@ -644,38 +672,25 @@ func (s *server) handleConditions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items := make([]map[string]any, 0, len(result.Items))
+	items := make([]conditionResponse, 0, len(result.Items))
 	counts := severityCounts()
 	for _, item := range result.Items {
-		if query.Get("severity") != "" && item.Severity != query.Get("severity") {
-			continue
-		}
-		if query.Get("code") != "" && item.Code != query.Get("code") {
-			continue
-		}
-		if query.Get("nodeId") != "" && deref(item.NodeID) != query.Get("nodeId") {
-			continue
-		}
-		if query.Get("database") != "" && deref(item.Database) != query.Get("database") {
-			continue
-		}
-		if query.Get("table") != "" && deref(item.Table) != query.Get("table") {
-			continue
-		}
-		if query.Get("partitionId") != "" && deref(item.PartitionID) != query.Get("partitionId") {
+		if !conditionMatches(query, item) {
 			continue
 		}
 		counts[item.Severity]++
 		items = append(items, apiCondition(item))
 	}
-	sortMapItems(items, "severity", "conditionId")
+	slices.SortStableFunc(items, func(a, b conditionResponse) int {
+		return cmp.Or(cmp.Compare(a.Severity, b.Severity), cmp.Compare(a.ConditionID, b.ConditionID))
+	})
 
-	s.writeJSON(w, r, map[string]any{
-		"collection": collectionMeta(result),
-		"items":      items,
-		"counts": map[string]any{
-			"total":      len(items),
-			"bySeverity": counts,
+	s.writeJSON(w, r, conditionsEnvelope{
+		Collection: collectionMeta(result),
+		Items:      items,
+		Counts: conditionsCounts{
+			Total:      len(items),
+			BySeverity: counts,
 		},
 	})
 }

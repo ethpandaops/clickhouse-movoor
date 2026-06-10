@@ -143,8 +143,9 @@ func clickHouseClientConfig(cfg ClickHouseConfig) chclient.Config {
 	}
 
 	return chclient.Config{
-		DialTimeout: cfg.DialTimeout,
-		Nodes:       nodes,
+		DialTimeout:  cfg.DialTimeout,
+		QueryTimeout: cfg.QueryTimeout,
+		Nodes:        nodes,
 	}
 }
 

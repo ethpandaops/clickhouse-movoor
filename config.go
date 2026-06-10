@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
 )
 
 const (
@@ -207,7 +209,7 @@ func validateClickHouseNodeDSN(raw string) error {
 
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse: %w", err)
+		return fmt.Errorf("parse: %w", chclient.RedactDSNError(err, raw))
 	}
 
 	if parsed.Scheme != "clickhouse" {

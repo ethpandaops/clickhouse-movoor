@@ -78,10 +78,10 @@
   --color-muted: var(--muted-value);
   --color-border: var(--border-value);
 
-  /* State colors */
-  --color-success: #4ae085;
-  --color-warning: #f6c85f;
-  --color-danger: #ff8f70;
+  /* State colors (per-theme, see @layer base) */
+  --color-success: var(--success-value);
+  --color-warning: var(--warning-value);
+  --color-danger: var(--danger-value);
 
   /* Animations */
   --animate-fade-in: fade-in 0.5s ease-out forwards;
@@ -104,16 +104,20 @@
  */
 @layer base {
   :root {
-    /* Light mode - green on paper */
-    --primary-value: #00cc6e;
-    --secondary-value: #0284c7;
+    /* Light mode - deep green on paper. Text-bearing colors hold WCAG AA
+       (>= 4.5:1) against white surfaces; bright greens live in dark mode. */
+    --primary-value: #15803d;
+    --secondary-value: #0369a1;
     --accent-value: var(--color-brand-400);
-    --on-primary-value: #04140c;
+    --on-primary-value: #ffffff;
     --background-value: #f3fcf7;
     --surface-value: #ffffff;
     --foreground-value: var(--color-neutral-200);
-    --muted-value: var(--color-neutral-600);
-    --border-value: #c2ead4;
+    --muted-value: var(--color-neutral-500);
+    --border-value: #b3e0c8;
+    --success-value: #047857;
+    --warning-value: #b45309;
+    --danger-value: #b91c1c;
 
     --theme-browser-color: #f3fcf7;
 
@@ -132,6 +136,9 @@
     --foreground-value: var(--color-neutral-900);
     --muted-value: var(--color-neutral-700);
     --border-value: var(--color-neutral-300);
+    --success-value: #4ae085;
+    --warning-value: #f6c85f;
+    --danger-value: #ff8f70;
 
     --theme-browser-color: #000000;
 

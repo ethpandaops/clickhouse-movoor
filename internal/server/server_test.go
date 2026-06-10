@@ -342,9 +342,9 @@ func (f *fakeState) CollectDisks(context.Context) clusterstate.Result[clustersta
 			Path:                 "/var/lib/clickhouse/",
 			Type:                 "Local",
 			CapacityKnown:        true,
-			FreeSpaceBytes:       uint64Ptr(1000),
-			TotalSpaceBytes:      uint64Ptr(2000),
-			UnreservedSpaceBytes: uint64Ptr(900),
+			FreeSpaceBytes:       new(uint64(1000)),
+			TotalSpaceBytes:      new(uint64(2000)),
+			UnreservedSpaceBytes: new(uint64(900)),
 			UsedByActiveParts:    123,
 		},
 		{
@@ -377,6 +377,10 @@ func (f *fakeState) CollectParts(context.Context, clusterstate.Watch) clustersta
 	return fakeResult(f.now, []clusterstate.Part{})
 }
 
+func (f *fakeState) CollectActiveParts(context.Context, clusterstate.Watch) clusterstate.Result[clusterstate.Part] {
+	return fakeResult(f.now, []clusterstate.Part{})
+}
+
 func (f *fakeState) CollectDetachedParts(context.Context, clusterstate.Watch) clusterstate.Result[clusterstate.DetachedPart] {
 	return fakeResult(f.now, []clusterstate.DetachedPart{})
 }
@@ -389,7 +393,7 @@ func (f *fakeState) CollectReplicationQueue(context.Context) clusterstate.Result
 	return fakeResult(f.now, []clusterstate.ReplicationQueueItem{})
 }
 
-func (f *fakeState) CollectPartEvents(context.Context) clusterstate.Result[clusterstate.PartEvent] {
+func (f *fakeState) CollectPartEvents(context.Context, *time.Time, *time.Time) clusterstate.Result[clusterstate.PartEvent] {
 	return fakeResult(f.now, []clusterstate.PartEvent{})
 }
 
@@ -398,6 +402,14 @@ func (f *fakeState) CollectOperations(context.Context) clusterstate.Result[clust
 }
 
 func (f *fakeState) CollectConditions(context.Context) clusterstate.Result[clusterstate.Condition] {
+	return fakeResult(f.now, []clusterstate.Condition{})
+}
+
+func (f *fakeState) TableConditions(context.Context, clusterstate.Result[clusterstate.TableState]) clusterstate.Result[clusterstate.Condition] {
+	return fakeResult(f.now, []clusterstate.Condition{})
+}
+
+func (f *fakeState) PartitionConditions(context.Context, clusterstate.Watch, clusterstate.Result[clusterstate.Part]) clusterstate.Result[clusterstate.Condition] {
 	return fakeResult(f.now, []clusterstate.Condition{})
 }
 
@@ -410,9 +422,4 @@ func fakeResult[T any](now time.Time, items []T) clusterstate.Result[T] {
 		NodesFailed:        0,
 		Items:              items,
 	}
-}
-
-//nolint:modernize // Test fixture pointer helper keeps fake payloads readable.
-func uint64Ptr(value uint64) *uint64 {
-	return &value
 }

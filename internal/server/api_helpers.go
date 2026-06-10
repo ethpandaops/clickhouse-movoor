@@ -1,13 +1,12 @@
 package server
 
 import (
+	"cmp"
 	"encoding/json"
-	"fmt"
 	"maps"
 	"net/http"
 	"net/url"
 	"slices"
-	"sort"
 	"strconv"
 	"time"
 
@@ -137,402 +136,401 @@ func (s *server) writeNoResponders(w http.ResponseWriter, r *http.Request, nodes
 	return true
 }
 
-func collectionMeta[T any](result clusterstate.Result[T]) map[string]any {
-	return map[string]any{
-		"collectedAt":          result.CollectedAt,
-		"partial":              result.Partial(),
-		"collectionDurationMs": int(result.CollectionDuration.Milliseconds()),
-		"nodesExpected":        result.NodesExpected,
-		"nodesResponded":       result.NodesResponded,
-		"nodesFailed":          result.NodesFailed,
-		"warnings":             apiWarnings(result.Warnings),
+func collectionMeta[T any](result clusterstate.Result[T]) collectionResponse {
+	return collectionResponse{
+		CollectedAt:          result.CollectedAt,
+		Partial:              result.Partial(),
+		CollectionDurationMs: int(result.CollectionDuration.Milliseconds()),
+		NodesExpected:        result.NodesExpected,
+		NodesResponded:       result.NodesResponded,
+		NodesFailed:          result.NodesFailed,
+		Warnings:             apiWarnings(result.Warnings),
 	}
 }
 
-func apiWarnings(warnings []clusterstate.Warning) []map[string]any {
-	items := make([]map[string]any, 0, len(warnings))
+func apiWarnings(warnings []clusterstate.Warning) []warningResponse {
+	items := make([]warningResponse, 0, len(warnings))
 	for _, warning := range warnings {
-		item := map[string]any{
-			"kind":    warning.Kind,
-			"code":    warning.Code,
-			"message": warning.Message,
-		}
-		if warning.NodeID != "" {
-			item["nodeId"] = warning.NodeID
-		}
-		items = append(items, item)
+		items = append(items, warningResponse{
+			Kind:    warning.Kind,
+			Code:    warning.Code,
+			Message: warning.Message,
+			NodeID:  warning.NodeID,
+		})
 	}
 
 	return items
 }
 
-func apiNode(item clusterstate.NodeStatus) map[string]any {
-	node := apiNodeRef(item.Node)
-	node["endpoint"] = "clickhouse://" + item.Node.Addr
-	node["reachable"] = item.Reachable
-	node["observedAt"] = item.ObservedAt
-	if item.Version != "" {
-		node["version"] = item.Version
-	}
-	if item.Timezone != "" {
-		node["timezone"] = item.Timezone
+func apiNode(item clusterstate.NodeStatus) nodeResponse {
+	node := nodeResponse{
+		nodeRef:    apiNodeRef(item.Node),
+		Endpoint:   "clickhouse://" + item.Node.Addr,
+		Reachable:  item.Reachable,
+		ObservedAt: item.ObservedAt,
+		Version:    item.Version,
+		Timezone:   item.Timezone,
+		LastError:  nilIfEmpty(item.LastError),
 	}
 	if item.UptimeSeconds != 0 {
-		node["uptimeSeconds"] = uint64String(item.UptimeSeconds)
-	}
-	if item.LastError == "" {
-		node["lastError"] = nil
-	} else {
-		node["lastError"] = item.LastError
+		node.UptimeSeconds = uint64String(item.UptimeSeconds)
 	}
 
 	return node
 }
 
-func apiDisk(item clusterstate.Disk) map[string]any {
-	disk := apiNodeRef(item.Node)
-	disk["disk"] = item.Name
-	disk["type"] = item.Type
-	disk["objectStorageType"] = item.ObjectStorageType
-	disk["isRemote"] = item.IsRemote
-	disk["isBroken"] = item.IsBroken
-	disk["path"] = nilIfEmpty(item.Path)
-	disk["cachePath"] = nilIfEmpty(item.CachePath)
-	disk["capacityKnown"] = item.CapacityKnown
-	disk["freeSpaceBytes"] = nullableUInt64String(item.FreeSpaceBytes)
-	disk["totalSpaceBytes"] = nullableUInt64String(item.TotalSpaceBytes)
-	disk["unreservedSpaceBytes"] = nullableUInt64String(item.UnreservedSpaceBytes)
-	disk["usedByActivePartsBytes"] = uint64String(item.UsedByActiveParts)
-
-	return disk
-}
-
-func apiNodeRef(node chclient.Node) map[string]any {
-	return map[string]any{
-		"nodeId":  node.ID,
-		"shard":   node.Shard,
-		"replica": node.Replica,
+func apiDisk(item clusterstate.Disk) diskResponse {
+	return diskResponse{
+		nodeRef:                apiNodeRef(item.Node),
+		Disk:                   item.Name,
+		Type:                   item.Type,
+		ObjectStorageType:      item.ObjectStorageType,
+		IsRemote:               item.IsRemote,
+		IsBroken:               item.IsBroken,
+		Path:                   nilIfEmpty(item.Path),
+		CachePath:              nilIfEmpty(item.CachePath),
+		CapacityKnown:          item.CapacityKnown,
+		FreeSpaceBytes:         nullableUInt64String(item.FreeSpaceBytes),
+		TotalSpaceBytes:        nullableUInt64String(item.TotalSpaceBytes),
+		UnreservedSpaceBytes:   nullableUInt64String(item.UnreservedSpaceBytes),
+		UsedByActivePartsBytes: uint64String(item.UsedByActiveParts),
 	}
 }
 
-func apiTableListItem(item tableAggregate) map[string]any {
-	table := apiTableBase(item)
-	table["nodesObserved"] = item.nodesObserved
-	table["shardsObserved"] = item.shardsObserved
-	table["replicasPerShard"] = item.replicasPerShard
-	table["activePartitions"] = item.activePartitions
-	table["activeParts"] = uint64String(item.activeParts)
-	table["rows"] = uint64String(item.rows)
-	table["bytesOnDisk"] = uint64String(item.bytesOnDisk)
-	table["partitionPlacements"] = fixedPlacementCounts(item.partitionPlacements)
-	table["partitionOperations"] = fixedOperationCounts(item.partitionOperations)
-	table["activeOperations"] = item.activeOperations
-	table["conditions"] = apiConditions(item.conditions)
-	table["links"] = map[string]string{
-		"partEvents": "/api/v1/part-events?database=" + urlQueryEscape(item.database) + "&table=" + urlQueryEscape(item.table),
-	}
-
-	return table
-}
-
-func apiTableDetail(item tableAggregate) map[string]any {
-	table := apiTableBase(item)
-	table["uuid"] = item.uuid
-	table["samplingKey"] = item.samplingKey
-	table["isReplicated"] = item.isReplicated
-	table["nodesObserved"] = item.nodesObserved
-	table["activePartitions"] = item.activePartitions
-	table["activeParts"] = uint64String(item.activeParts)
-	table["rows"] = uint64String(item.rows)
-	table["bytesOnDisk"] = uint64String(item.bytesOnDisk)
-	table["minPartition"] = item.minPartition
-	table["maxPartition"] = item.maxPartition
-	table["lastModificationTime"] = item.lastModificationTime
-	table["partitionPlacements"] = fixedPlacementCounts(item.partitionPlacements)
-	table["partitionOperations"] = fixedOperationCounts(item.partitionOperations)
-	table["nodes"] = apiNodeTableStates(item.nodes)
-	table["conditions"] = apiConditions(item.conditions)
-
-	return table
-}
-
-func apiTableBase(item tableAggregate) map[string]any {
-	return map[string]any{
-		"database":      item.database,
-		"table":         item.table,
-		"engine":        item.engine,
-		"storagePolicy": item.storagePolicy,
-		"targetDisk":    item.targetDisk,
-		"partitionKey":  item.partitionKey,
-		"sortingKey":    item.sortingKey,
-		"primaryKey":    item.primaryKey,
-		"versionColumn": item.versionColumn,
+func apiNodeRef(node chclient.Node) nodeRef {
+	return nodeRef{
+		NodeID:  node.ID,
+		Shard:   node.Shard,
+		Replica: node.Replica,
 	}
 }
 
-func apiNodeTableStates(items []clusterstate.TableState) []map[string]any {
-	states := make([]map[string]any, 0, len(items))
+func apiTableListItem(item tableAggregate) tableSummaryResponse {
+	return tableSummaryResponse{
+		tableBase:           apiTableBase(item),
+		NodesObserved:       item.nodesObserved,
+		ShardsObserved:      item.shardsObserved,
+		ReplicasPerShard:    item.replicasPerShard,
+		ActivePartitions:    item.activePartitions,
+		ActiveParts:         uint64String(item.activeParts),
+		Rows:                uint64String(item.rows),
+		BytesOnDisk:         uint64String(item.bytesOnDisk),
+		PartitionPlacements: fixedPlacementCounts(item.partitionPlacements),
+		PartitionOperations: fixedOperationCounts(item.partitionOperations),
+		ActiveOperations:    item.activeOperations,
+		Conditions:          apiConditions(item.conditions),
+		Links: map[string]string{
+			"partEvents": "/api/v1/part-events?database=" + url.QueryEscape(item.database) + "&table=" + url.QueryEscape(item.table),
+		},
+	}
+}
+
+func apiTableDetail(item tableAggregate) tableDetailResponse {
+	return tableDetailResponse{
+		tableBase:            apiTableBase(item),
+		UUID:                 item.uuid,
+		SamplingKey:          item.samplingKey,
+		IsReplicated:         item.isReplicated,
+		NodesObserved:        item.nodesObserved,
+		ActivePartitions:     item.activePartitions,
+		ActiveParts:          uint64String(item.activeParts),
+		Rows:                 uint64String(item.rows),
+		BytesOnDisk:          uint64String(item.bytesOnDisk),
+		MinPartition:         item.minPartition,
+		MaxPartition:         item.maxPartition,
+		LastModificationTime: item.lastModificationTime,
+		PartitionPlacements:  fixedPlacementCounts(item.partitionPlacements),
+		PartitionOperations:  fixedOperationCounts(item.partitionOperations),
+		Nodes:                apiNodeTableStates(item.nodes),
+		Conditions:           apiConditions(item.conditions),
+	}
+}
+
+func apiTableBase(item tableAggregate) tableBase {
+	return tableBase{
+		Database:      item.database,
+		Table:         item.table,
+		Engine:        item.engine,
+		StoragePolicy: item.storagePolicy,
+		TargetDisk:    item.targetDisk,
+		PartitionKey:  item.partitionKey,
+		SortingKey:    item.sortingKey,
+		PrimaryKey:    item.primaryKey,
+		VersionColumn: item.versionColumn,
+	}
+}
+
+func apiNodeTableStates(items []clusterstate.TableState) []nodeTableStateResponse {
+	states := make([]nodeTableStateResponse, 0, len(items))
 	for _, item := range items {
-		state := map[string]any{
-			"nodeId":      item.Node.ID,
-			"engine":      item.Engine,
-			"activeParts": uint64String(item.ActiveParts),
-			"rows":        uint64String(item.Rows),
-			"bytesOnDisk": uint64String(item.BytesOnDisk),
+		state := nodeTableStateResponse{
+			NodeID:      item.Node.ID,
+			Engine:      item.Engine,
+			ActiveParts: uint64String(item.ActiveParts),
+			Rows:        uint64String(item.Rows),
+			BytesOnDisk: uint64String(item.BytesOnDisk),
 		}
 		if item.Replica != nil {
-			state["replica"] = map[string]any{
-				"readonly":             item.Replica.Readonly,
-				"sessionExpired":       item.Replica.SessionExpired,
-				"queueSize":            uint64String(item.Replica.QueueSize),
-				"absoluteDelaySeconds": uint64String(item.Replica.AbsoluteDelaySeconds),
-				"totalReplicas":        uint64String(item.Replica.TotalReplicas),
-				"activeReplicas":       uint64String(item.Replica.ActiveReplicas),
+			state.Replica = &replicaStateResponse{
+				Readonly:             item.Replica.Readonly,
+				SessionExpired:       item.Replica.SessionExpired,
+				QueueSize:            uint64String(item.Replica.QueueSize),
+				AbsoluteDelaySeconds: uint64String(item.Replica.AbsoluteDelaySeconds),
+				TotalReplicas:        uint64String(item.Replica.TotalReplicas),
+				ActiveReplicas:       uint64String(item.Replica.ActiveReplicas),
 			}
 		}
 		states = append(states, state)
 	}
-	sortMapItems(states, "nodeId", "")
+	slices.SortStableFunc(states, func(a, b nodeTableStateResponse) int {
+		return cmp.Compare(a.NodeID, b.NodeID)
+	})
 
 	return states
 }
 
-func apiColumn(column clusterstate.Column) map[string]any {
-	return map[string]any{
-		"name":              column.Name,
-		"position":          column.Position,
-		"type":              column.Type,
-		"kind":              column.Kind,
-		"defaultKind":       column.DefaultKind,
-		"defaultExpression": column.DefaultExpression,
-		"codecExpression":   column.CodecExpression,
-		"ttlExpression":     column.TTLExpression,
-		"comment":           column.Comment,
-		"isInPartitionKey":  column.IsInPartitionKey,
-		"isInSortingKey":    column.IsInSortingKey,
-		"isInPrimaryKey":    column.IsInPrimaryKey,
-		"isInSamplingKey":   column.IsInSamplingKey,
+func apiColumn(column clusterstate.Column) columnResponse {
+	return columnResponse{
+		Name:              column.Name,
+		Position:          column.Position,
+		Type:              column.Type,
+		Kind:              column.Kind,
+		DefaultKind:       column.DefaultKind,
+		DefaultExpression: column.DefaultExpression,
+		CodecExpression:   column.CodecExpression,
+		TTLExpression:     column.TTLExpression,
+		Comment:           column.Comment,
+		IsInPartitionKey:  column.IsInPartitionKey,
+		IsInSortingKey:    column.IsInSortingKey,
+		IsInPrimaryKey:    column.IsInPrimaryKey,
+		IsInSamplingKey:   column.IsInSamplingKey,
 	}
 }
 
-func apiPartition(item partitionAggregate) map[string]any {
-	placements := make([]map[string]any, 0, len(item.placements))
+func apiPartition(item partitionAggregate) partitionResponse {
+	placements := make([]partitionPlacementResponse, 0, len(item.placements))
 	for _, placement := range item.placements {
-		nodePlacement := apiNodeRef(placement.node)
-		nodePlacement["disk"] = placement.disk
-		nodePlacement["activeParts"] = uint64String(placement.activeParts)
-		nodePlacement["rows"] = uint64String(placement.rows)
-		nodePlacement["bytesOnDisk"] = uint64String(placement.bytesOnDisk)
-		nodePlacement["lastModificationTime"] = placement.lastModificationTime
-		placements = append(placements, nodePlacement)
+		placements = append(placements, partitionPlacementResponse{
+			nodeRef:              apiNodeRef(placement.node),
+			Disk:                 placement.disk,
+			ActiveParts:          uint64String(placement.activeParts),
+			Rows:                 uint64String(placement.rows),
+			BytesOnDisk:          uint64String(placement.bytesOnDisk),
+			LastModificationTime: placement.lastModificationTime,
+		})
 	}
-	sortMapItems(placements, "nodeId", "disk")
+	slices.SortStableFunc(placements, func(a, b partitionPlacementResponse) int {
+		return cmp.Or(cmp.Compare(a.NodeID, b.NodeID), cmp.Compare(a.Disk, b.Disk))
+	})
 
-	return map[string]any{
-		"database":             item.database,
-		"table":                item.table,
-		"partition":            item.partition,
-		"partitionId":          item.partitionID,
-		"targetDisk":           item.targetDisk,
-		"placement":            item.placement,
-		"operations":           item.operations,
-		"disks":                sortedStringSet(item.disks),
-		"activeParts":          uint64String(item.activeParts),
-		"rows":                 uint64String(item.rows),
-		"bytesOnDisk":          uint64String(item.bytesOnDisk),
-		"lastModificationTime": item.lastModificationTime,
-		"placements":           placements,
-		"conditions":           apiConditions(item.conditions),
-	}
-}
-
-func apiPart(item clusterstate.Part) map[string]any {
-	part := apiNodeRef(item.Node)
-	part["database"] = item.Database
-	part["table"] = item.Table
-	part["partition"] = item.Partition
-	part["partitionId"] = item.PartitionID
-	part["partName"] = item.Name
-	part["uuid"] = item.UUID
-	part["active"] = item.Active
-	part["disk"] = item.Disk
-	part["path"] = item.Path
-	part["partType"] = item.PartType
-	part["rows"] = uint64String(item.Rows)
-	part["marks"] = uint64String(item.Marks)
-	part["bytesOnDisk"] = uint64String(item.BytesOnDisk)
-	part["dataCompressedBytes"] = uint64String(item.DataCompressedBytes)
-	part["dataUncompressedBytes"] = uint64String(item.DataUncompressedBytes)
-	part["marksBytes"] = uint64String(item.MarksBytes)
-	part["primaryKeyBytesInMemory"] = uint64String(item.PrimaryKeyBytesInMemory)
-	part["primaryKeyBytesInMemoryAllocated"] = uint64String(item.PrimaryKeyBytesInMemoryAllocated)
-	part["secondaryIndicesCompressedBytes"] = uint64String(item.SecondaryIndicesCompressedBytes)
-	part["secondaryIndicesUncompressedBytes"] = uint64String(item.SecondaryIndicesUncompressedBytes)
-	part["secondaryIndicesMarksBytes"] = uint64String(item.SecondaryIndicesMarksBytes)
-	part["modificationTime"] = item.ModificationTime
-	part["removeTime"] = item.RemoveTime
-	part["refcount"] = uint64String(item.Refcount)
-	part["minBlockNumber"] = int64String(item.MinBlockNumber)
-	part["maxBlockNumber"] = int64String(item.MaxBlockNumber)
-	part["level"] = uint64String(item.Level)
-	part["dataVersion"] = uint64String(item.DataVersion)
-	part["deleteTtlInfoMin"] = item.DeleteTTLInfoMin
-	part["deleteTtlInfoMax"] = item.DeleteTTLInfoMax
-	part["moveTtlInfo"] = []map[string]any{}
-	part["recompressionTtlInfo"] = []map[string]any{}
-	part["defaultCompressionCodec"] = item.DefaultCompressionCodec
-	part["conditions"] = apiConditions(item.Conditions)
-
-	return part
-}
-
-func apiDetachedPart(item clusterstate.DetachedPart) map[string]any {
-	part := apiNodeRef(item.Node)
-	part["database"] = item.Database
-	part["table"] = item.Table
-	part["partitionId"] = deref(item.PartitionID)
-	part["partName"] = item.Name
-	part["disk"] = item.Disk
-	part["reason"] = deref(item.Reason)
-	part["path"] = item.Path
-	part["bytesOnDisk"] = uint64String(item.BytesOnDisk)
-	part["rows"] = uint64String(item.Rows)
-	part["minBlockNumber"] = nullableInt64String(item.MinBlockNumber)
-	part["maxBlockNumber"] = nullableInt64String(item.MaxBlockNumber)
-	part["level"] = nullableUInt64String(item.Level)
-	part["modificationTime"] = item.ModificationTime
-	part["conditions"] = apiConditions(item.Conditions)
-
-	return part
-}
-
-func apiOperation(item clusterstate.Operation) map[string]any {
-	return map[string]any{
-		"operationId":    item.OperationID,
-		"kind":           item.Kind,
-		"nodeId":         item.NodeID,
-		"database":       item.Database,
-		"table":          item.Table,
-		"partition":      item.Partition,
-		"partitionId":    item.PartitionID,
-		"attemptId":      item.AttemptID,
-		"state":          item.State,
-		"elapsedSeconds": item.ElapsedSeconds,
-		"progress":       item.Progress,
-		"sourceDisk":     item.SourceDisk,
-		"targetDisk":     item.TargetDisk,
-		"bytesTotal":     nullableUInt64String(item.BytesTotal),
-		"bytesProcessed": nullableUInt64String(item.BytesProcessed),
-		"latestMessage":  item.LatestMessage,
-		"startedAt":      item.StartedAt,
+	return partitionResponse{
+		Database:             item.database,
+		Table:                item.table,
+		Partition:            item.partition,
+		PartitionID:          item.partitionID,
+		TargetDisk:           item.targetDisk,
+		Placement:            item.placement,
+		Operations:           item.operations,
+		Disks:                slices.Sorted(maps.Keys(item.disks)),
+		ActiveParts:          uint64String(item.activeParts),
+		Rows:                 uint64String(item.rows),
+		BytesOnDisk:          uint64String(item.bytesOnDisk),
+		LastModificationTime: item.lastModificationTime,
+		Placements:           placements,
+		Conditions:           apiConditions(item.conditions),
 	}
 }
 
-func apiMutation(item clusterstate.Mutation) map[string]any {
-	blockNumbers := make([]map[string]any, 0, len(item.BlockNumbers))
+func apiPart(item clusterstate.Part) partResponse {
+	return partResponse{
+		nodeRef:                           apiNodeRef(item.Node),
+		Database:                          item.Database,
+		Table:                             item.Table,
+		Partition:                         item.Partition,
+		PartitionID:                       item.PartitionID,
+		PartName:                          item.Name,
+		UUID:                              item.UUID,
+		Active:                            item.Active,
+		Disk:                              item.Disk,
+		Path:                              item.Path,
+		PartType:                          item.PartType,
+		Rows:                              uint64String(item.Rows),
+		Marks:                             uint64String(item.Marks),
+		BytesOnDisk:                       uint64String(item.BytesOnDisk),
+		DataCompressedBytes:               uint64String(item.DataCompressedBytes),
+		DataUncompressedBytes:             uint64String(item.DataUncompressedBytes),
+		MarksBytes:                        uint64String(item.MarksBytes),
+		PrimaryKeyBytesInMemory:           uint64String(item.PrimaryKeyBytesInMemory),
+		PrimaryKeyBytesInMemoryAllocated:  uint64String(item.PrimaryKeyBytesInMemoryAllocated),
+		SecondaryIndicesCompressedBytes:   uint64String(item.SecondaryIndicesCompressedBytes),
+		SecondaryIndicesUncompressedBytes: uint64String(item.SecondaryIndicesUncompressedBytes),
+		SecondaryIndicesMarksBytes:        uint64String(item.SecondaryIndicesMarksBytes),
+		ModificationTime:                  item.ModificationTime,
+		RemoveTime:                        item.RemoveTime,
+		Refcount:                          uint64String(item.Refcount),
+		MinBlockNumber:                    int64String(item.MinBlockNumber),
+		MaxBlockNumber:                    int64String(item.MaxBlockNumber),
+		Level:                             uint64String(item.Level),
+		DataVersion:                       uint64String(item.DataVersion),
+		DeleteTTLInfoMin:                  item.DeleteTTLInfoMin,
+		DeleteTTLInfoMax:                  item.DeleteTTLInfoMax,
+		MoveTTLInfo:                       []map[string]any{},
+		RecompressionTTLInfo:              []map[string]any{},
+		DefaultCompressionCodec:           item.DefaultCompressionCodec,
+		Conditions:                        apiConditions(item.Conditions),
+	}
+}
+
+func apiDetachedPart(item clusterstate.DetachedPart) detachedPartResponse {
+	return detachedPartResponse{
+		nodeRef:          apiNodeRef(item.Node),
+		Database:         item.Database,
+		Table:            item.Table,
+		PartitionID:      deref(item.PartitionID),
+		PartName:         item.Name,
+		Disk:             item.Disk,
+		Reason:           deref(item.Reason),
+		Path:             item.Path,
+		BytesOnDisk:      uint64String(item.BytesOnDisk),
+		Rows:             uint64String(item.Rows),
+		MinBlockNumber:   nullableInt64String(item.MinBlockNumber),
+		MaxBlockNumber:   nullableInt64String(item.MaxBlockNumber),
+		Level:            nullableUInt64String(item.Level),
+		ModificationTime: item.ModificationTime,
+		Conditions:       apiConditions(item.Conditions),
+	}
+}
+
+func apiOperation(item clusterstate.Operation) operationResponse {
+	return operationResponse{
+		OperationID:    item.OperationID,
+		Kind:           item.Kind,
+		NodeID:         item.NodeID,
+		Database:       item.Database,
+		Table:          item.Table,
+		Partition:      item.Partition,
+		PartitionID:    item.PartitionID,
+		AttemptID:      item.AttemptID,
+		State:          item.State,
+		ElapsedSeconds: item.ElapsedSeconds,
+		Progress:       item.Progress,
+		SourceDisk:     item.SourceDisk,
+		TargetDisk:     item.TargetDisk,
+		BytesTotal:     nullableUInt64String(item.BytesTotal),
+		BytesProcessed: nullableUInt64String(item.BytesProcessed),
+		LatestMessage:  item.LatestMessage,
+		StartedAt:      item.StartedAt,
+	}
+}
+
+func apiMutation(item clusterstate.Mutation) mutationResponse {
+	blockNumbers := make([]mutationBlockNumberResponse, 0, len(item.BlockNumbers))
 	for _, block := range item.BlockNumbers {
-		blockNumbers = append(blockNumbers, map[string]any{
-			"partitionId": block.PartitionID,
-			"number":      uint64String(block.Number),
+		blockNumbers = append(blockNumbers, mutationBlockNumberResponse{
+			PartitionID: block.PartitionID,
+			Number:      uint64String(block.Number),
 		})
 	}
 
-	mutation := apiNodeRef(item.Node)
-	mutation["operationId"] = "mutation|" + item.Node.ID + "|" + item.Database + "|" + item.Table + "|" + item.MutationID
-	mutation["kind"] = "mutation"
-	mutation["database"] = item.Database
-	mutation["table"] = item.Table
-	mutation["mutationId"] = item.MutationID
-	mutation["attemptId"] = item.MutationID
-	mutation["command"] = item.Command
-	mutation["createTime"] = item.CreateTime
-	mutation["isDone"] = item.IsDone
-	mutation["isKilled"] = item.IsKilled
-	mutation["partsToDo"] = uint64String(item.PartsToDo)
-	mutation["partsToDoNames"] = item.PartsToDoNames
-	mutation["blockNumbers"] = blockNumbers
-	mutation["latestFailedPart"] = item.LatestFailedPart
-	mutation["latestFailTime"] = item.LatestFailTime
-	mutation["latestFailReason"] = item.LatestFailReason
-	mutation["conditions"] = apiConditions(item.Conditions)
-
-	return mutation
-}
-
-func apiReplicationQueueItem(item clusterstate.ReplicationQueueItem) map[string]any {
-	queueItem := apiNodeRef(item.Node)
-	attemptID := strconv.FormatUint(item.Position, 10) + ":" + item.Type + ":" + deref(item.NewPartName)
-	queueItem["operationId"] = "replication_queue|" + item.Node.ID + "|" + item.Database + "|" + item.Table + "|" + attemptID
-	queueItem["kind"] = "replication_queue"
-	queueItem["database"] = item.Database
-	queueItem["table"] = item.Table
-	queueItem["replicaName"] = item.ReplicaName
-	queueItem["position"] = uint64String(item.Position)
-	queueItem["nodeName"] = item.NodeName
-	queueItem["attemptId"] = attemptID
-	queueItem["type"] = item.Type
-	queueItem["createTime"] = item.CreateTime
-	queueItem["requiredQuorum"] = uint64String(item.RequiredQuorum)
-	queueItem["sourceReplica"] = item.SourceReplica
-	queueItem["newPartName"] = item.NewPartName
-	queueItem["partsToMerge"] = item.PartsToMerge
-	queueItem["isDetach"] = item.IsDetach
-	queueItem["isCurrentlyExecuting"] = item.IsCurrentlyExecuting
-	queueItem["numTries"] = uint64String(item.NumTries)
-	queueItem["lastAttemptTime"] = item.LastAttemptTime
-	queueItem["lastPostponeTime"] = item.LastPostponeTime
-	queueItem["numPostponed"] = uint64String(item.NumPostponed)
-	queueItem["postponeReason"] = item.PostponeReason
-	queueItem["lastException"] = item.LastException
-	queueItem["conditions"] = apiConditions(item.Conditions)
-
-	return queueItem
-}
-
-func apiPartEvent(item clusterstate.PartEvent) map[string]any {
-	event := apiNodeRef(item.Node)
-	eventID := "part_event|" + item.Node.ID + "|" + item.Database + "|" + item.Table + "|" + item.PartitionID + "|" + item.PartName + "|" + item.EventType + "|" + item.EventTimeMicrostamp
-	event["eventId"] = eventID
-	event["database"] = item.Database
-	event["table"] = item.Table
-	event["partitionId"] = item.PartitionID
-	event["partName"] = item.PartName
-	event["eventType"] = item.EventType
-	event["eventTime"] = item.EventTime
-	event["durationMs"] = uint64String(item.DurationMs)
-	event["rows"] = uint64String(item.Rows)
-	event["bytesCompressed"] = uint64String(item.BytesCompressed)
-	event["bytesUncompressed"] = uint64String(item.BytesUncompressed)
-	event["readRows"] = uint64String(item.ReadRows)
-	event["readBytes"] = uint64String(item.ReadBytes)
-	event["mergedFrom"] = item.MergedFrom
-	event["sourceDisk"] = item.SourceDisk
-	event["targetDisk"] = item.TargetDisk
-	event["error"] = int64String(item.Error)
-	event["exception"] = item.Exception
-
-	return event
-}
-
-func apiCondition(item clusterstate.Condition) map[string]any {
-	return map[string]any{
-		"conditionId": item.ConditionID,
-		"severity":    item.Severity,
-		"code":        item.Code,
-		"message":     item.Message,
-		"observedAt":  item.ObservedAt,
-		"database":    item.Database,
-		"table":       item.Table,
-		"partition":   item.Partition,
-		"partitionId": item.PartitionID,
-		"nodeId":      item.NodeID,
-		"evidence":    item.Evidence,
-		"links":       item.Links,
+	return mutationResponse{
+		nodeRef:          apiNodeRef(item.Node),
+		OperationID:      "mutation|" + item.Node.ID + "|" + item.Database + "|" + item.Table + "|" + item.MutationID,
+		Kind:             "mutation",
+		Database:         item.Database,
+		Table:            item.Table,
+		MutationID:       item.MutationID,
+		AttemptID:        item.MutationID,
+		Command:          item.Command,
+		CreateTime:       item.CreateTime,
+		IsDone:           item.IsDone,
+		IsKilled:         item.IsKilled,
+		PartsToDo:        uint64String(item.PartsToDo),
+		PartsToDoNames:   item.PartsToDoNames,
+		BlockNumbers:     blockNumbers,
+		LatestFailedPart: item.LatestFailedPart,
+		LatestFailTime:   item.LatestFailTime,
+		LatestFailReason: item.LatestFailReason,
+		Conditions:       apiConditions(item.Conditions),
 	}
 }
 
-func apiConditions(items []clusterstate.Condition) []map[string]any {
-	conditions := make([]map[string]any, 0, len(items))
+func apiReplicationQueueItem(item clusterstate.ReplicationQueueItem) replicationQueueResponse {
+	attemptID := strconv.FormatUint(item.Position, 10) + ":" + item.Type + ":" + deref(item.NewPartName)
+
+	return replicationQueueResponse{
+		nodeRef:              apiNodeRef(item.Node),
+		OperationID:          "replication_queue|" + item.Node.ID + "|" + item.Database + "|" + item.Table + "|" + attemptID,
+		Kind:                 "replication_queue",
+		Database:             item.Database,
+		Table:                item.Table,
+		ReplicaName:          item.ReplicaName,
+		Position:             uint64String(item.Position),
+		NodeName:             item.NodeName,
+		AttemptID:            attemptID,
+		Type:                 item.Type,
+		CreateTime:           item.CreateTime,
+		RequiredQuorum:       uint64String(item.RequiredQuorum),
+		SourceReplica:        item.SourceReplica,
+		NewPartName:          item.NewPartName,
+		PartsToMerge:         item.PartsToMerge,
+		IsDetach:             item.IsDetach,
+		IsCurrentlyExecuting: item.IsCurrentlyExecuting,
+		NumTries:             uint64String(item.NumTries),
+		LastAttemptTime:      item.LastAttemptTime,
+		LastPostponeTime:     item.LastPostponeTime,
+		NumPostponed:         uint64String(item.NumPostponed),
+		PostponeReason:       item.PostponeReason,
+		LastException:        item.LastException,
+		Conditions:           apiConditions(item.Conditions),
+	}
+}
+
+func apiPartEvent(item clusterstate.PartEvent) partEventResponse {
+	eventID := "part_event|" + item.Node.ID + "|" + item.Database + "|" + item.Table + "|" +
+		item.PartitionID + "|" + item.PartName + "|" + item.EventType + "|" + item.EventTimeMicrostamp
+
+	return partEventResponse{
+		nodeRef:           apiNodeRef(item.Node),
+		EventID:           eventID,
+		Database:          item.Database,
+		Table:             item.Table,
+		PartitionID:       item.PartitionID,
+		PartName:          item.PartName,
+		EventType:         item.EventType,
+		EventTime:         item.EventTime,
+		DurationMs:        uint64String(item.DurationMs),
+		Rows:              uint64String(item.Rows),
+		BytesCompressed:   uint64String(item.BytesCompressed),
+		BytesUncompressed: uint64String(item.BytesUncompressed),
+		ReadRows:          uint64String(item.ReadRows),
+		ReadBytes:         uint64String(item.ReadBytes),
+		MergedFrom:        item.MergedFrom,
+		SourceDisk:        item.SourceDisk,
+		TargetDisk:        item.TargetDisk,
+		Error:             int64String(item.Error),
+		Exception:         item.Exception,
+	}
+}
+
+func apiCondition(item clusterstate.Condition) conditionResponse {
+	return conditionResponse{
+		ConditionID: item.ConditionID,
+		Severity:    item.Severity,
+		Code:        item.Code,
+		Message:     item.Message,
+		ObservedAt:  item.ObservedAt,
+		Database:    item.Database,
+		Table:       item.Table,
+		Partition:   item.Partition,
+		PartitionID: item.PartitionID,
+		NodeID:      item.NodeID,
+		Evidence:    item.Evidence,
+		Links:       item.Links,
+	}
+}
+
+func apiConditions(items []clusterstate.Condition) []conditionResponse {
+	conditions := make([]conditionResponse, 0, len(items))
 	for _, item := range items {
 		conditions = append(conditions, apiCondition(item))
 	}
@@ -542,8 +540,16 @@ func apiConditions(items []clusterstate.Condition) []map[string]any {
 
 //nolint:gocognit // Aggregation intentionally keeps table rollup dimensions together.
 func aggregateTables(items []clusterstate.TableState, conditions []clusterstate.Condition) []tableAggregate {
+	// Aggregate in node-ID order so first-observed fields (engine, storage
+	// policy, ...) are deterministic when replicas disagree; collection
+	// results arrive in completion order otherwise.
+	ordered := slices.Clone(items)
+	slices.SortStableFunc(ordered, func(a, b clusterstate.TableState) int {
+		return cmp.Compare(a.Node.ID, b.Node.ID)
+	})
+
 	grouped := make(map[string]*tableAggregate)
-	for _, item := range items {
+	for _, item := range ordered {
 		key := item.Database + "\x00" + item.Table
 		aggregate, ok := grouped[key]
 		if !ok {
@@ -624,8 +630,13 @@ func aggregateTableDetail(items []clusterstate.TableState, conditions []clusters
 }
 
 func aggregatePartitions(parts []clusterstate.Part, conditions []clusterstate.Condition) []partitionAggregate {
+	ordered := slices.Clone(parts)
+	slices.SortStableFunc(ordered, func(a, b clusterstate.Part) int {
+		return cmp.Compare(a.Node.ID, b.Node.ID)
+	})
+
 	grouped := make(map[string]*partitionAggregate)
-	for _, part := range parts {
+	for _, part := range ordered {
 		if !part.Active {
 			continue
 		}
@@ -677,12 +688,6 @@ func aggregatePartitions(parts []clusterstate.Part, conditions []clusterstate.Co
 	return out
 }
 
-func collectConditionsBestEffort(r *http.Request, state StateReader) []clusterstate.Condition {
-	result := state.CollectConditions(r.Context())
-
-	return result.Items
-}
-
 func tableScopedConditions(items []clusterstate.Condition, database string, table string) []clusterstate.Condition {
 	out := make([]clusterstate.Condition, 0)
 	for _, item := range items {
@@ -717,7 +722,7 @@ func partitionMatches(query map[string][]string, item partitionAggregate) bool {
 			return false
 		}
 	}
-	if firstQuery(query, "operation") != "" && !stringSliceContains(item.operations, firstQuery(query, "operation")) {
+	if firstQuery(query, "operation") != "" && !slices.Contains(item.operations, firstQuery(query, "operation")) {
 		return false
 	}
 	if firstQuery(query, "nodeId") != "" || firstQuery(query, "shard") != "" || firstQuery(query, "replica") != "" {
@@ -735,6 +740,29 @@ func partitionMatches(query map[string][]string, item partitionAggregate) bool {
 
 func nodePartMatches(query map[string][]string, node chclient.Node) bool {
 	return nodeMatches(query, node)
+}
+
+func conditionMatches(query map[string][]string, item clusterstate.Condition) bool {
+	if firstQuery(query, "severity") != "" && item.Severity != firstQuery(query, "severity") {
+		return false
+	}
+	if firstQuery(query, "code") != "" && item.Code != firstQuery(query, "code") {
+		return false
+	}
+	if firstQuery(query, "nodeId") != "" && deref(item.NodeID) != firstQuery(query, "nodeId") {
+		return false
+	}
+	if firstQuery(query, "database") != "" && deref(item.Database) != firstQuery(query, "database") {
+		return false
+	}
+	if firstQuery(query, "table") != "" && deref(item.Table) != firstQuery(query, "table") {
+		return false
+	}
+	if firstQuery(query, "partitionId") != "" && deref(item.PartitionID) != firstQuery(query, "partitionId") {
+		return false
+	}
+
+	return true
 }
 
 func nodeMatches(query map[string][]string, node chclient.Node) bool {
@@ -829,18 +857,6 @@ func writeBadParameter(w http.ResponseWriter, r *http.Request, parameter string,
 	})
 }
 
-func sortMapItems(items []map[string]any, primary string, secondary string) {
-	sort.SliceStable(items, func(i, j int) bool {
-		left := stringify(items[i][primary])
-		right := stringify(items[j][primary])
-		if left == right && secondary != "" {
-			return stringify(items[i][secondary]) < stringify(items[j][secondary])
-		}
-
-		return left < right
-	})
-}
-
 func uint64String(value uint64) string {
 	return strconv.FormatUint(value, 10)
 }
@@ -849,20 +865,24 @@ func int64String(value int64) string {
 	return strconv.FormatInt(value, 10)
 }
 
-func nullableUInt64String(value *uint64) any {
+func nullableUInt64String(value *uint64) *string {
 	if value == nil {
 		return nil
 	}
 
-	return uint64String(*value)
+	formatted := uint64String(*value)
+
+	return &formatted
 }
 
-func nullableInt64String(value *int64) any {
+func nullableInt64String(value *int64) *string {
 	if value == nil {
 		return nil
 	}
 
-	return int64String(*value)
+	formatted := int64String(*value)
+
+	return &formatted
 }
 
 func fixedPlacementCounts(counts map[string]int) map[string]int {
@@ -893,16 +913,6 @@ func fixedCounts(counts map[string]int, keys []string) map[string]int {
 	return out
 }
 
-func sortedStringSet(values map[string]struct{}) []string {
-	out := make([]string, 0, len(values))
-	for value := range values {
-		out = append(out, value)
-	}
-	sort.Strings(out)
-
-	return out
-}
-
 func firstQuery(query map[string][]string, key string) string {
 	values := query[key]
 	if len(values) == 0 {
@@ -912,16 +922,12 @@ func firstQuery(query map[string][]string, key string) string {
 	return values[0]
 }
 
-func stringSliceContains(values []string, target string) bool {
-	return slices.Contains(values, target)
-}
-
-func nilIfEmpty(value string) any {
+func nilIfEmpty(value string) *string {
 	if value == "" {
 		return nil
 	}
 
-	return value
+	return &value
 }
 
 func deref(value *string) string {
@@ -930,19 +936,6 @@ func deref(value *string) string {
 	}
 
 	return *value
-}
-
-func stringify(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return typed
-	case time.Time:
-		return typed.Format(time.RFC3339Nano)
-	default:
-		return fmt.Sprint(typed)
-	}
 }
 
 func stringLess(left *string, right *string) bool {
@@ -976,8 +969,4 @@ func timeGreater(left *time.Time, right *time.Time) bool {
 	}
 
 	return left.After(*right)
-}
-
-func urlQueryEscape(value string) string {
-	return url.QueryEscape(value)
 }

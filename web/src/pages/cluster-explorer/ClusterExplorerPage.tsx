@@ -3,7 +3,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import {
   ArrowPathIcon,
-  ChevronDownIcon,
   ChevronRightIcon,
   CircleStackIcon,
   CubeIcon,
@@ -61,8 +60,72 @@ const badgeToneClass: Record<BadgeTone, string> = {
   warning: 'bg-warning/10 text-warning',
 };
 
+/**
+ * Responsive row template shared by every level:
+ * - base (<md): identity + bytes; the rest collapses into a stacked meta line
+ * - md-xl: four columns (name, engine/disk, rows, bytes)
+ * - xl+: all seven columns
+ * Cells 2-6 carry the matching visibility classes below, in DOM order.
+ */
 const rowGridClass =
-  'grid min-w-[1120px] grid-cols-[minmax(22rem,1.6fr)_minmax(12rem,0.8fr)_minmax(10rem,0.7fr)_minmax(9rem,0.6fr)_minmax(9rem,0.6fr)_minmax(9rem,0.6fr)_minmax(10rem,0.7fr)] items-center gap-3';
+  'relative grid items-center gap-3 grid-cols-[minmax(0,1fr)_minmax(4.5rem,auto)] md:grid-cols-[minmax(0,1.8fr)_minmax(0,0.8fr)_minmax(4.5rem,0.45fr)_minmax(5.5rem,0.5fr)] xl:grid-cols-[minmax(20rem,1.6fr)_minmax(10rem,0.8fr)_minmax(8rem,0.7fr)_minmax(6.5rem,0.55fr)_minmax(5.5rem,0.5fr)_minmax(6.5rem,0.55fr)_minmax(7rem,0.6fr)]';
+
+const colEngineClass = 'max-md:hidden';
+const colShardClass = 'max-xl:hidden';
+const colPartitionsClass = 'max-xl:hidden';
+const colPartsClass = 'max-xl:hidden';
+const colRowsClass = 'max-md:hidden';
+
+/** Stacked stats line shown under a nested row's identity on mobile only. */
+const mobileMetaClass = 'mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted md:hidden';
+
+/** Indentation per tree level: tighter on mobile, roomier from md up. */
+const indentClass = ['', 'pl-4 md:pl-5', 'pl-8 md:pl-10', 'pl-12 md:pl-16'] as const;
+
+/** Guide column positions per tree depth, aligned to chevron centers at each breakpoint. */
+const guideColClass = ['left-[24px]', 'left-[40px] md:left-[44px]', 'left-[56px] md:left-[64px]'] as const;
+
+/** Horizontal elbow widths bridging a guide column to the row's own control. */
+const guideTickClass = ['w-1 md:w-2', 'w-1 md:w-2', 'w-1 md:w-3'] as const;
+
+const guideLineClass = 'pointer-events-none absolute bg-border/70';
+
+interface TreeGuidesProps {
+  /**
+   * isLast flags for the ancestor chain ending at this row, one per depth.
+   * ASCII-tree semantics: pass-through trunks render only while an ancestor
+   * still has siblings below; the row's own column renders ├ (more siblings)
+   * or └ (last child, line stops and turns right).
+   */
+  trail: boolean[];
+}
+
+/** ASCII-style tree guides connecting nested rows to their ancestors. */
+function TreeGuides({ trail }: TreeGuidesProps): JSX.Element {
+  const own = trail.length - 1;
+
+  return (
+    <>
+      {trail
+        .slice(0, -1)
+        .map((ancestorIsLast, depth) =>
+          ancestorIsLast ? null : (
+            <span key={depth} aria-hidden className={clsx(guideLineClass, 'inset-y-0 w-px', guideColClass[depth])} />
+          )
+        )}
+      <span
+        aria-hidden
+        className={clsx(guideLineClass, 'top-0 w-px', trail[own] ? 'h-1/2' : 'h-full', guideColClass[own])}
+      />
+      <span aria-hidden className={clsx(guideLineClass, 'top-1/2 h-px', guideColClass[own], guideTickClass[own])} />
+    </>
+  );
+}
+
+/** Trunk segment dropping from an expanded row's chevron toward its children. */
+function TreeTrunkStart({ depth }: { depth: number }): JSX.Element {
+  return <span aria-hidden className={clsx(guideLineClass, 'top-1/2 bottom-0 w-px', guideColClass[depth])} />;
+}
 
 const numberFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
 const integerFormatter = new Intl.NumberFormat();
@@ -131,7 +194,7 @@ export function ClusterExplorerPage({
         <button
           type="button"
           onClick={refresh}
-          className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground transition-colors hover:border-primary/60 hover:text-primary"
+          className="inline-flex h-9 shrink-0 items-center justify-center gap-2 self-start rounded-md border border-border bg-surface px-3 text-sm font-medium text-foreground transition-colors hover:border-primary/60 hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:self-auto"
         >
           <ArrowPathIcon className={clsx('size-4', isFetching && 'animate-spin')} />
           Refresh
@@ -141,15 +204,20 @@ export function ClusterExplorerPage({
       {error && <ProblemBanner message={errorMessage(error)} />}
       {collection?.partial && <WarningsBanner collection={collection} />}
 
-      <div className="overflow-hidden rounded-md border border-border bg-surface">
-        <div className="overflow-x-auto">
-          <div className={clsx(rowGridClass, 'border-b border-border bg-background/50 px-3 py-2 text-xs text-muted')}>
+      <div className="-mx-4 border-y border-border bg-surface sm:-mx-6 md:mx-0 md:rounded-md md:border">
+        <div>
+          <div
+            className={clsx(
+              rowGridClass,
+              'sticky top-14 z-10 border-b border-border bg-surface px-3 py-2 text-xs text-muted md:rounded-t-md'
+            )}
+          >
             <div>Table / node / partition / part</div>
-            <div>Engine / disk</div>
-            <div>Shard / replica</div>
-            <div className="text-right">Partitions</div>
-            <div className="text-right">Parts</div>
-            <div className="text-right">Rows</div>
+            <div className={colEngineClass}>Engine / disk</div>
+            <div className={colShardClass}>Shard / replica</div>
+            <div className={clsx(colPartitionsClass, 'text-right')}>Partitions</div>
+            <div className={clsx(colPartsClass, 'text-right')}>Parts</div>
+            <div className={clsx(colRowsClass, 'text-right')}>Rows</div>
             <div className="text-right">Bytes</div>
           </div>
 
@@ -225,7 +293,11 @@ function TableSection({
 
   return (
     <div className="border-b border-border last:border-b-0">
-      <div className={clsx(rowGridClass, 'px-3 py-2.5 text-sm hover:bg-background/35')}>
+      <div
+        onClick={onToggleTable}
+        className={clsx(rowGridClass, 'cursor-pointer px-3 py-2.5 text-sm transition-colors hover:bg-background/35')}
+      >
+        {expanded && !expandedError && (loadingExpandedData || nodeGroups.length > 0) && <TreeTrunkStart depth={0} />}
         <div className="flex min-w-0 items-center gap-2">
           <ExpandButton
             expanded={expanded}
@@ -234,33 +306,36 @@ function TableSection({
           />
           <CircleStackIcon className="size-4 shrink-0 text-primary" />
           <div className="min-w-0">
-            <div className="truncate font-semibold text-foreground">
-              {table.database}.{table.table}
+            <div className="truncate font-semibold text-foreground" title={`${table.database}.${table.table}`}>
+              <span className="font-normal text-muted">{table.database}.</span>
+              {table.table}
             </div>
-            <div className="mt-0.5 truncate font-mono text-[11px] text-muted">
+            <div className="mt-0.5 truncate font-mono text-[11px] text-muted" title={table.partitionKey}>
               {table.partitionKey || 'no partition key'}
             </div>
           </div>
           <ConditionBadges conditions={table.conditions} />
         </div>
-        <div className="min-w-0">
-          <div className="truncate text-foreground">{table.engine}</div>
+        <div className={clsx(colEngineClass, 'min-w-0')}>
+          <div className="truncate text-foreground" title={table.engine}>
+            {table.engine}
+          </div>
           <div className="mt-0.5 truncate text-xs text-muted">{table.storagePolicy || 'no policy'}</div>
         </div>
-        <div>
+        <div className={colShardClass}>
           <Badge tone="info">
             {table.shardsObserved}x{table.replicasPerShard}
           </Badge>
           <div className="mt-1 text-xs text-muted">{table.nodesObserved} observed</div>
         </div>
-        <Metric value={table.activePartitions.toString()} />
-        <Metric value={table.activeParts} />
-        <Metric value={table.rows} />
+        <Metric className={colPartitionsClass} value={table.activePartitions.toString()} />
+        <Metric className={colPartsClass} value={table.activeParts} />
+        <Metric className={colRowsClass} value={table.rows} />
         <Metric value={formatBytes(table.bytesOnDisk)} format="text" />
       </div>
 
       {expanded && (
-        <div className="border-t border-border bg-background/25">
+        <div className="animate-fade-in border-t border-border bg-background/25">
           {expandedError ? (
             <InlineNotice tone="danger" label={errorMessage(expandedError)} />
           ) : loadingExpandedData ? (
@@ -268,7 +343,7 @@ function TableSection({
           ) : nodeGroups.length === 0 ? (
             <InlineNotice label="No node state reported for this table" />
           ) : (
-            nodeGroups.map(group => {
+            nodeGroups.map((group, index) => {
               const nodeKeyValue = nodeKey(key, group.nodeId);
               const nodeExpanded = expandedNodes.has(nodeKeyValue);
 
@@ -279,6 +354,7 @@ function TableSection({
                   group={group}
                   expanded={nodeExpanded}
                   expandedPartitions={expandedPartitions}
+                  isLast={index === nodeGroups.length - 1}
                   onToggleNode={() => onToggleNode(nodeKeyValue)}
                   onTogglePartition={onTogglePartition}
                 />
@@ -296,6 +372,7 @@ interface NodeSectionProps {
   group: NodeGroup;
   expanded: boolean;
   expandedPartitions: Set<string>;
+  isLast: boolean;
   onToggleNode: () => void;
   onTogglePartition: (key: string) => void;
 }
@@ -305,6 +382,7 @@ function NodeSection({
   group,
   expanded,
   expandedPartitions,
+  isLast,
   onToggleNode,
   onTogglePartition,
 }: NodeSectionProps): JSX.Element {
@@ -317,8 +395,13 @@ function NodeSection({
 
   return (
     <div className="border-t border-border/60">
-      <div className={clsx(rowGridClass, 'px-3 py-2 text-sm hover:bg-surface/60')}>
-        <div className="flex min-w-0 items-center gap-2 pl-5">
+      <div
+        onClick={onToggleNode}
+        className={clsx(rowGridClass, 'cursor-pointer px-3 py-2 text-sm transition-colors hover:bg-surface/60')}
+      >
+        <TreeGuides trail={[isLast]} />
+        {expanded && group.partitions.length > 0 && <TreeTrunkStart depth={1} />}
+        <div className={clsx('flex min-w-0 items-center gap-2', indentClass[1])}>
           <ExpandButton
             expanded={expanded}
             label={`${expanded ? 'Collapse' : 'Expand'} node ${group.nodeId}`}
@@ -326,14 +409,27 @@ function NodeSection({
           />
           <ServerStackIcon className="size-4 shrink-0 text-muted" />
           <div className="min-w-0">
-            <div className="truncate font-medium text-foreground">{group.nodeId}</div>
-            <div className="mt-0.5 truncate text-xs text-muted">
+            <div className="truncate font-medium text-foreground" title={group.nodeId}>
+              {group.nodeId}
+            </div>
+            <div className="mt-0.5 truncate text-xs text-muted" title={group.node?.endpoint}>
               {group.node?.endpoint ?? 'node detail unavailable'}
             </div>
+            <div className={mobileMetaClass}>
+              <Badge tone={healthTone}>{healthLabel}</Badge>
+              <Badge tone="muted">
+                {group.node?.shard ?? '-'} / {group.node?.replica ?? '-'}
+              </Badge>
+              <span>{formatCount(group.partitions.length.toString(), 'partition')}</span>
+              <span>{formatCount(activeParts, 'part')}</span>
+              <span>{formatCount(rows, 'row')}</span>
+            </div>
           </div>
-          <Badge tone={healthTone}>{healthLabel}</Badge>
+          <span className="max-md:hidden">
+            <Badge tone={healthTone}>{healthLabel}</Badge>
+          </span>
         </div>
-        <div className="min-w-0">
+        <div className={clsx(colEngineClass, 'min-w-0')}>
           <div className="truncate text-foreground">{group.state?.engine ?? 'not observed'}</div>
           {group.state?.replica && (
             <div className="mt-0.5 text-xs text-muted">
@@ -342,23 +438,23 @@ function NodeSection({
             </div>
           )}
         </div>
-        <div>
+        <div className={colShardClass}>
           <Badge tone="muted">
             {group.node?.shard ?? '-'} / {group.node?.replica ?? '-'}
           </Badge>
         </div>
-        <Metric value={group.partitions.length.toString()} />
-        <Metric value={activeParts} />
-        <Metric value={rows} />
+        <Metric className={colPartitionsClass} value={group.partitions.length.toString()} />
+        <Metric className={colPartsClass} value={activeParts} />
+        <Metric className={colRowsClass} value={rows} />
         <Metric value={formatBytes(bytes)} format="text" />
       </div>
 
       {expanded && (
-        <div className="bg-background/35">
+        <div className="animate-fade-in bg-background/35">
           {group.partitions.length === 0 ? (
             <InlineNotice indent label="No active partitions reported on this node" />
           ) : (
-            group.partitions.map(partition => {
+            group.partitions.map((partition, index) => {
               const partitionKeyValue = partitionKey(tableKeyValue, group.nodeId, partition.partitionId);
               const partitionExpanded = expandedPartitions.has(partitionKeyValue);
 
@@ -367,6 +463,7 @@ function NodeSection({
                   key={partitionKeyValue}
                   partition={partition}
                   expanded={partitionExpanded}
+                  trail={[isLast, index === group.partitions.length - 1]}
                   onTogglePartition={() => onTogglePartition(partitionKeyValue)}
                 />
               );
@@ -381,14 +478,20 @@ function NodeSection({
 interface PartitionSectionProps {
   partition: PartitionGroup;
   expanded: boolean;
+  trail: boolean[];
   onTogglePartition: () => void;
 }
 
-function PartitionSection({ partition, expanded, onTogglePartition }: PartitionSectionProps): JSX.Element {
+function PartitionSection({ partition, expanded, trail, onTogglePartition }: PartitionSectionProps): JSX.Element {
   return (
     <div className="border-t border-border/50">
-      <div className={clsx(rowGridClass, 'px-3 py-2 text-sm hover:bg-surface/50')}>
-        <div className="flex min-w-0 items-center gap-2 pl-10">
+      <div
+        onClick={onTogglePartition}
+        className={clsx(rowGridClass, 'cursor-pointer px-3 py-2 text-sm transition-colors hover:bg-surface/50')}
+      >
+        <TreeGuides trail={trail} />
+        {expanded && partition.parts.length > 0 && <TreeTrunkStart depth={2} />}
+        <div className={clsx('flex min-w-0 items-center gap-2', indentClass[2])}>
           <ExpandButton
             expanded={expanded}
             label={`${expanded ? 'Collapse' : 'Expand'} partition ${partition.partitionId}`}
@@ -396,22 +499,40 @@ function PartitionSection({ partition, expanded, onTogglePartition }: PartitionS
           />
           <Squares2X2Icon className="size-4 shrink-0 text-muted" />
           <div className="min-w-0">
-            <div className="truncate font-medium text-foreground">{partition.partition || partition.partitionId}</div>
-            <div className="mt-0.5 truncate font-mono text-[11px] text-muted">{partition.partitionId}</div>
+            <div className="truncate font-medium text-foreground" title={partition.partition || partition.partitionId}>
+              {partition.partition || partition.partitionId}
+            </div>
+            <div className="mt-0.5 truncate font-mono text-[11px] text-muted" title={partition.partitionId}>
+              {partition.partitionId}
+            </div>
+            <div className={mobileMetaClass}>
+              <DiskList disks={partition.disks} />
+              <span>{formatCount(partition.parts.length.toString(), 'part')}</span>
+              <span>{formatCount(partition.rows, 'row')}</span>
+              <span>{formatTimestamp(partition.lastModificationTime)}</span>
+            </div>
           </div>
         </div>
-        <DiskList disks={partition.disks} />
-        <div className="text-xs text-muted">{formatTimestamp(partition.lastModificationTime)}</div>
-        <Metric value="1" />
-        <Metric value={partition.parts.length.toString()} />
-        <Metric value={partition.rows} />
+        <div className={clsx(colEngineClass, 'min-w-0')}>
+          <DiskList disks={partition.disks} />
+        </div>
+        <div className={clsx(colShardClass, 'text-xs text-muted')}>
+          {formatTimestamp(partition.lastModificationTime)}
+        </div>
+        <Metric className={colPartitionsClass} value="1" />
+        <Metric className={colPartsClass} value={partition.parts.length.toString()} />
+        <Metric className={colRowsClass} value={partition.rows} />
         <Metric value={formatBytes(partition.bytesOnDisk)} format="text" />
       </div>
 
       {expanded && (
-        <div className="bg-background/50">
-          {partition.parts.map(part => (
-            <PartRow key={`${part.nodeId}/${part.partName}/${part.disk}`} part={part} />
+        <div className="animate-fade-in bg-background/50">
+          {partition.parts.map((part, index) => (
+            <PartRow
+              key={`${part.nodeId}/${part.partName}/${part.disk}`}
+              part={part}
+              trail={[...trail, index === partition.parts.length - 1]}
+            />
           ))}
         </div>
       )}
@@ -419,26 +540,41 @@ function PartitionSection({ partition, expanded, onTogglePartition }: PartitionS
   );
 }
 
-function PartRow({ part }: { part: TablePart }): JSX.Element {
+function PartRow({ part, trail }: { part: TablePart; trail: boolean[] }): JSX.Element {
   return (
     <div className={clsx(rowGridClass, 'border-t border-border/40 px-3 py-1.5 text-xs')}>
-      <div className="flex min-w-0 items-center gap-2 pl-16">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-surface">
+      <TreeGuides trail={trail} />
+      <div className={clsx('flex min-w-0 items-center gap-2', indentClass[3])}>
+        <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-surface">
           <CubeIcon className="size-3.5 text-muted" />
         </span>
         <div className="min-w-0">
-          <div className="truncate font-mono text-foreground">{part.partName}</div>
-          <div className="mt-0.5 truncate text-muted">{part.path}</div>
+          <div className="truncate font-mono text-foreground" title={part.partName}>
+            {part.partName}
+          </div>
+          <div className="mt-0.5 truncate text-muted" title={part.path}>
+            {part.path}
+          </div>
+          <div className={mobileMetaClass}>
+            <DiskList disks={[part.disk]} />
+            <span>
+              {part.partType || '-'}
+              {part.level ? ` · L${part.level}` : ''}
+            </span>
+            <span>{formatCount(part.rows, 'row')}</span>
+          </div>
         </div>
         <ConditionBadges conditions={part.conditions} />
       </div>
-      <DiskList disks={[part.disk]} />
-      <div className="font-mono text-[11px] text-muted">
+      <div className={clsx(colEngineClass, 'min-w-0')}>
+        <DiskList disks={[part.disk]} />
+      </div>
+      <div className={clsx(colShardClass, 'font-mono text-[11px] text-muted')}>
         {part.minBlockNumber ?? '-'}..{part.maxBlockNumber ?? '-'}
       </div>
-      <div className="text-right text-muted">{part.partType || '-'}</div>
-      <Metric value={part.level ? `L${part.level}` : '-'} format="text" />
-      <Metric value={part.rows} />
+      <div className={clsx(colPartitionsClass, 'text-right text-muted')}>{part.partType || '-'}</div>
+      <Metric className={colPartsClass} value={part.level ? `L${part.level}` : '-'} format="text" />
+      <Metric className={colRowsClass} value={part.rows} />
       <Metric value={formatBytes(part.bytesOnDisk)} format="text" />
     </div>
   );
@@ -459,10 +595,13 @@ function ExpandButton({
       aria-expanded={expanded}
       aria-label={label}
       title={label}
-      onClick={onClick}
-      className="flex size-7 shrink-0 items-center justify-center rounded-md border border-border bg-surface text-muted transition-colors hover:border-primary/60 hover:text-primary"
+      onClick={event => {
+        event.stopPropagation();
+        onClick();
+      }}
+      className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted transition-colors hover:bg-primary/10 hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
     >
-      {expanded ? <ChevronDownIcon className="size-4" /> : <ChevronRightIcon className="size-4" />}
+      <ChevronRightIcon className={clsx('size-4 transition-transform duration-150', expanded && 'rotate-90')} />
     </button>
   );
 }
@@ -477,10 +616,22 @@ function Badge({ tone, children }: { tone: BadgeTone; children: React.ReactNode 
   );
 }
 
-function Metric({ value, format = 'integer' }: { value: string; format?: 'integer' | 'text' }): JSX.Element {
+function Metric({
+  value,
+  format = 'integer',
+  className,
+}: {
+  value: string;
+  format?: 'integer' | 'text';
+  className?: string;
+}): JSX.Element {
   const display = format === 'integer' ? formatInteger(value) : value;
 
-  return <div className="truncate text-right font-mono text-xs text-foreground tabular-nums">{display}</div>;
+  return (
+    <div className={clsx('truncate text-right font-mono text-xs text-foreground tabular-nums', className)}>
+      {display}
+    </div>
+  );
 }
 
 function DiskList({ disks }: { disks: string[] }): JSX.Element {
@@ -566,13 +717,13 @@ function LoadingRows(): JSX.Element {
     <div className="space-y-0">
       {[0, 1, 2].map(row => (
         <div key={row} className={clsx(rowGridClass, 'border-b border-border px-3 py-3 last:border-b-0')}>
-          <div className="h-4 w-72 animate-pulse rounded-md bg-muted/15" />
-          <div className="h-4 w-32 animate-pulse rounded-md bg-muted/15" />
-          <div className="h-4 w-20 animate-pulse rounded-md bg-muted/15" />
-          <div className="h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15" />
-          <div className="h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15" />
-          <div className="h-4 w-20 animate-pulse justify-self-end rounded-md bg-muted/15" />
-          <div className="h-4 w-20 animate-pulse justify-self-end rounded-md bg-muted/15" />
+          <div className="h-4 max-w-72 animate-pulse rounded-md bg-muted/15" />
+          <div className={clsx(colEngineClass, 'h-4 w-32 animate-pulse rounded-md bg-muted/15')} />
+          <div className={clsx(colShardClass, 'h-4 w-20 animate-pulse rounded-md bg-muted/15')} />
+          <div className={clsx(colPartitionsClass, 'h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15')} />
+          <div className={clsx(colPartsClass, 'h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15')} />
+          <div className={clsx(colRowsClass, 'h-4 w-20 animate-pulse justify-self-end rounded-md bg-muted/15')} />
+          <div className="h-4 w-16 animate-pulse justify-self-end rounded-md bg-muted/15" />
         </div>
       ))}
     </div>
@@ -586,23 +737,24 @@ function LoadingNodeRows({ count }: { count: number }): JSX.Element {
     <div className="space-y-0">
       {rows.map(row => (
         <div key={row} className={clsx(rowGridClass, 'border-t border-border/60 px-3 py-2.5')}>
-          <div className="flex min-w-0 items-center gap-2 pl-5">
-            <div className="size-7 shrink-0 animate-pulse rounded-md bg-muted/15" />
-            <div className="size-4 shrink-0 animate-pulse rounded bg-muted/15" />
+          <TreeGuides trail={[row === rows.length - 1]} />
+          <div className={clsx('flex min-w-0 items-center gap-2', indentClass[1])}>
+            <div className="size-6 shrink-0 animate-pulse rounded-md bg-muted/15" />
+            <div className="size-4 shrink-0 animate-pulse rounded-sm bg-muted/15" />
             <div className="min-w-0 space-y-1.5">
-              <div className="h-4 w-56 animate-pulse rounded-md bg-muted/15" />
-              <div className="h-3 w-36 animate-pulse rounded-md bg-muted/15" />
+              <div className="h-4 w-56 max-w-full animate-pulse rounded-md bg-muted/15" />
+              <div className="h-3 w-36 max-w-full animate-pulse rounded-md bg-muted/15" />
             </div>
           </div>
-          <div className="space-y-1.5">
+          <div className={clsx(colEngineClass, 'space-y-1.5')}>
             <div className="h-4 w-40 animate-pulse rounded-md bg-muted/15" />
             <div className="h-3 w-28 animate-pulse rounded-md bg-muted/15" />
           </div>
-          <div className="h-5 w-28 animate-pulse rounded-md bg-muted/15" />
-          <div className="h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15" />
-          <div className="h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15" />
-          <div className="h-4 w-20 animate-pulse justify-self-end rounded-md bg-muted/15" />
-          <div className="h-4 w-20 animate-pulse justify-self-end rounded-md bg-muted/15" />
+          <div className={clsx(colShardClass, 'h-5 w-28 animate-pulse rounded-md bg-muted/15')} />
+          <div className={clsx(colPartitionsClass, 'h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15')} />
+          <div className={clsx(colPartsClass, 'h-4 w-12 animate-pulse justify-self-end rounded-md bg-muted/15')} />
+          <div className={clsx(colRowsClass, 'h-4 w-20 animate-pulse justify-self-end rounded-md bg-muted/15')} />
+          <div className="h-4 w-16 animate-pulse justify-self-end rounded-md bg-muted/15" />
         </div>
       ))}
     </div>
@@ -610,7 +762,17 @@ function LoadingNodeRows({ count }: { count: number }): JSX.Element {
 }
 
 function EmptyState(): JSX.Element {
-  return <div className="px-3 py-10 text-center text-sm text-muted">No watched tables reported.</div>;
+  return (
+    <div className="flex flex-col items-center gap-2 px-3 py-14 text-center">
+      <span className="flex size-10 items-center justify-center rounded-md border border-border bg-background/50">
+        <CircleStackIcon className="size-5 text-muted" />
+      </span>
+      <div className="text-sm font-medium text-foreground">No watched tables</div>
+      <div className="max-w-xs text-xs text-muted">
+        Tables matching the watch configuration will appear here once the controller observes them.
+      </div>
+    </div>
+  );
 }
 
 function buildNodeGroups(
@@ -817,6 +979,10 @@ function formatInteger(value: string): string {
   }
 
   return integer.toString();
+}
+
+function formatCount(value: string, noun: string): string {
+  return `${formatInteger(value)} ${noun}${value === '1' ? '' : 's'}`;
 }
 
 function formatBytes(value: string): string {
