@@ -1,11 +1,8 @@
 # clickhouse-movoor
 
-A long-running controller that continuously tiers cold ClickHouse partitions
-from local disk to object storage (S3), keeping recent ("hot") data local. It
-runs as one instance per node, reconciling that node's own local ClickHouse.
-
-> **Status:** early stage. The scaffolding (Go service, operator web UI, CI,
-> release) exists; the tiering logic is being built out.
+A long-running controller that observes ClickHouse MergeTree partitions across
+configured physical nodes and moves cold partitions onto a configured
+ClickHouse target disk.
 
 ## Architecture
 

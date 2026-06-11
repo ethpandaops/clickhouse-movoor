@@ -1,0 +1,1 @@
+export { TieringPartitionCell } from './TieringPartitionCell';

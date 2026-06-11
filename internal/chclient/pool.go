@@ -126,14 +126,7 @@ func openNode(node NodeConfig, dialTimeout time.Duration, queryTimeout time.Dura
 	if dialTimeout > 0 {
 		opts.DialTimeout = dialTimeout
 	}
-	if queryTimeout > 0 {
-		if opts.Settings == nil {
-			opts.Settings = clickhouse.Settings{}
-		}
-		if _, ok := opts.Settings["max_execution_time"]; !ok {
-			opts.Settings["max_execution_time"] = int(math.Ceil(queryTimeout.Seconds()))
-		}
-	}
+	applyQueryTimeout(opts, queryTimeout)
 	if opts.MaxOpenConns == 0 {
 		opts.MaxOpenConns = defaultMaxOpenConns
 	}
@@ -142,6 +135,18 @@ func openNode(node NodeConfig, dialTimeout time.Duration, queryTimeout time.Dura
 	}
 
 	return clickhouse.OpenDB(opts), opts.Addr[0], nil
+}
+
+func applyQueryTimeout(opts *clickhouse.Options, queryTimeout time.Duration) {
+	if queryTimeout <= 0 {
+		return
+	}
+	if opts.Settings == nil {
+		opts.Settings = clickhouse.Settings{}
+	}
+	if _, ok := opts.Settings["max_execution_time"]; !ok {
+		opts.Settings["max_execution_time"] = int(math.Ceil(queryTimeout.Seconds()))
+	}
 }
 
 // RedactDSN masks the password component of a DSN-like string so it is safe to

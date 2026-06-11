@@ -74,7 +74,7 @@ FROM
         tupleElement(network, 1) AS dimension_index,
         tupleElement(network, 2) AS network_id,
         toUInt64(scenario_id * 100000 + dimension_index * 10000 + row_number) AS synthetic_id,
-        toDateTime('2026-01-01 00:00:00') + toIntervalMonth(scenario_id - 1) AS base_time,
+        toStartOfMonth(now()) + toIntervalMonth(scenario_id - 8) AS base_time,
         row_number
     FROM
     (
@@ -109,7 +109,7 @@ FROM
         tupleElement(network, 1) AS dimension_index,
         tupleElement(network, 2) AS network_id,
         toUInt64(scenario_id * 100000 + dimension_index * 10000 + row_number) AS synthetic_id,
-        toDateTime('2026-01-01 00:00:00') + toIntervalMonth(scenario_id - 1) AS base_time,
+        toStartOfMonth(now()) + toIntervalMonth(scenario_id - 8) AS base_time,
         row_number
     FROM
     (
@@ -144,7 +144,7 @@ FROM
         tupleElement(chain, 1) AS dimension_index,
         tupleElement(chain, 2) AS chain_id,
         toUInt64(scenario_id * 100000 + dimension_index * 10000 + row_number) AS synthetic_id,
-        toDateTime('2026-01-01 00:00:00') + toIntervalMonth(scenario_id - 1) AS base_time,
+        toStartOfMonth(now()) + toIntervalMonth(scenario_id - 8) AS base_time,
         row_number
     FROM
     (
@@ -264,7 +264,7 @@ FROM
     SELECT
         scenario_id,
         toUInt64(scenario_id * 100000 + row_number) AS synthetic_id,
-        toDateTime('2026-01-01 00:00:00') + toIntervalMonth(scenario_id - 1) AS base_time,
+        toStartOfMonth(now()) + toIntervalMonth(scenario_id - 8) AS base_time,
         row_number
     FROM
     (
@@ -403,7 +403,7 @@ FROM
         tupleElement(bucket, 1) AS dimension_index,
         tupleElement(bucket, 2) AS bucket_id,
         toUInt64(scenario_id * 100000 + dimension_index * 10000 + row_number) AS synthetic_id,
-        toDateTime('2026-01-01 00:00:00') + toIntervalMonth(scenario_id - 1) AS base_time,
+        toStartOfMonth(now()) + toIntervalMonth(scenario_id - 8) AS base_time,
         row_number
     FROM
     (
@@ -437,7 +437,7 @@ FROM
         tupleElement(network, 1) AS dimension_index,
         tupleElement(network, 2) AS network_id,
         toUInt64(scenario_id * 100000 + dimension_index * 10000 + row_number) AS synthetic_id,
-        toDateTime('2026-01-01 00:00:00') + toIntervalMonth(scenario_id - 1) AS base_time,
+        toStartOfMonth(now()) + toIntervalMonth(scenario_id - 8) AS base_time,
         row_number
     FROM
     (

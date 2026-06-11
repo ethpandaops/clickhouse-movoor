@@ -1,6 +1,7 @@
 package movoor
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/url"
@@ -11,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
+	"github.com/ethpandaops/clickhouse-movoor/internal/tiering"
 )
 
 const (
@@ -30,12 +32,14 @@ var (
 // Config is the top-level application configuration, normally loaded from a
 // YAML file via LoadConfig.
 //
-//nolint:tagliatelle // Existing config keys intentionally use lower camel case.
+//nolint:tagliatelle // Documented config keys intentionally use lower camel case.
 type Config struct {
 	Logging         string           `yaml:"logging"`
 	MetricsAddr     string           `yaml:"metricsAddr"`
 	HealthCheckAddr string           `yaml:"healthCheckAddr"`
+	Tracing         TracingConfig    `yaml:"tracing"`
 	ClickHouse      ClickHouseConfig `yaml:"clickhouse"`
+	Tiering         tiering.Config   `yaml:"tiering"`
 	Watches         []WatchConfig    `yaml:"watches"`
 	Frontend        FrontendConfig   `yaml:"frontend"`
 }
@@ -43,7 +47,7 @@ type Config struct {
 // ClickHouseConfig configures per-node ClickHouse connections. Each node entry
 // must identify exactly one physical ClickHouse server.
 //
-//nolint:tagliatelle // Existing config keys intentionally use lower camel case.
+//nolint:tagliatelle // Documented config keys intentionally use lower camel case.
 type ClickHouseConfig struct {
 	QueryTimeout time.Duration          `yaml:"queryTimeout"`
 	DialTimeout  time.Duration          `yaml:"dialTimeout"`
@@ -60,8 +64,10 @@ type ClickHouseNodeConfig struct {
 
 // WatchConfig identifies a table movoor should monitor.
 type WatchConfig struct {
-	Database string `yaml:"database"`
-	Table    string `yaml:"table"`
+	Database     string                `yaml:"database"`
+	Table        string                `yaml:"table"`
+	Tier         yaml.Node             `yaml:"tier"`
+	TierSettings *tiering.TierSettings `yaml:"-"`
 }
 
 // FrontendConfig configures the HTTP server that serves the embedded web UI
@@ -69,6 +75,18 @@ type WatchConfig struct {
 type FrontendConfig struct {
 	Enabled *bool  `yaml:"enabled"`
 	Addr    string `yaml:"addr"`
+}
+
+// TracingConfig configures optional OTLP tracing. Empty endpoint keeps tracing
+// off; a host:port endpoint starts an OTLP/gRPC trace exporter.
+//
+//nolint:tagliatelle // Documented config keys intentionally use lower camel case.
+type TracingConfig struct {
+	Endpoint string `yaml:"endpoint"`
+	// SampleRatio is a pointer so an explicit `sampleRatio: 0` (record no
+	// samples) survives default resolution — a float zero value would be
+	// indistinguishable from "unset" and silently coerced to 1.
+	SampleRatio *float64 `yaml:"sampleRatio"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.
@@ -86,12 +104,21 @@ func LoadConfig(path string) (Config, error) {
 		return Config{}, fmt.Errorf("read config: %w", err)
 	}
 
-	var cfg Config
-	if err = yaml.Unmarshal(data, &cfg); err != nil {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return Config{}, fmt.Errorf("config file %s is empty", path)
+	}
+
+	cfg := DefaultConfig()
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err = dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
 
 	cfg.ResolveDefaults()
+	if err = cfg.ResolveTiering(); err != nil {
+		return Config{}, fmt.Errorf("resolve tiering config: %w", err)
+	}
 	if err = cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config: %w", err)
 	}
@@ -112,6 +139,10 @@ func (c *Config) ResolveDefaults() {
 	if c.HealthCheckAddr == "" {
 		c.HealthCheckAddr = defaultHealthCheckAddr
 	}
+	if c.Tracing.SampleRatio == nil {
+		ratio := 1.0
+		c.Tracing.SampleRatio = &ratio
+	}
 
 	if c.ClickHouse.QueryTimeout == 0 {
 		c.ClickHouse.QueryTimeout = defaultQueryTimeout
@@ -124,6 +155,42 @@ func (c *Config) ResolveDefaults() {
 	if c.Frontend.Addr == "" {
 		c.Frontend.Addr = defaultFrontendAddr
 	}
+
+	c.Tiering.ResolveDefaults()
+}
+
+// ResolveTiering applies tiering.defaults to each per-watch tier block. A
+// watch without a tier block remains observe-only.
+func (c *Config) ResolveTiering() error {
+	for i := range c.ClickHouse.Nodes {
+		c.ClickHouse.Nodes[i].DSN = os.ExpandEnv(c.ClickHouse.Nodes[i].DSN)
+	}
+	for i := range c.Watches {
+		watch := &c.Watches[i]
+		if watch.Tier.IsZero() {
+			watch.TierSettings = nil
+			continue
+		}
+		effective := c.Tiering.Defaults.Clone()
+		raw, err := yaml.Marshal(&watch.Tier)
+		if err != nil {
+			return fmt.Errorf("watches[%d] (%s.%s): marshal tier block: %w", i, watch.Database, watch.Table, err)
+		}
+		dec := yaml.NewDecoder(bytes.NewReader(raw))
+		dec.KnownFields(true)
+		if err = dec.Decode(&effective); err != nil {
+			return fmt.Errorf("watches[%d] (%s.%s): %w", i, watch.Database, watch.Table, err)
+		}
+		effective.ResolveDefaults()
+		if effective.Mode == "" {
+			effective.Mode = c.Tiering.Mode
+		}
+		if err = effective.Validate(fmt.Sprintf("watches[%d].tier", i), true); err != nil {
+			return err
+		}
+		watch.TierSettings = &effective
+	}
+	return nil
 }
 
 // Validate checks the application configuration for required identity and
@@ -132,6 +199,18 @@ func (c *Config) ResolveDefaults() {
 //nolint:gocognit // Validation stays explicit so field-specific errors remain precise.
 func (c Config) Validate() error {
 	if err := validateLogging(c.Logging); err != nil {
+		return err
+	}
+	sampleRatio := 1.0
+	if c.Tracing.SampleRatio != nil {
+		sampleRatio = *c.Tracing.SampleRatio
+	}
+	if err := tiering.ValidateTracing(c.Tracing.Endpoint, sampleRatio); err != nil {
+		return err
+	}
+	tieringConfig := c.Tiering
+	tieringConfig.ResolveDefaults()
+	if err := tieringConfig.Validate(time.Now().UTC()); err != nil {
 		return err
 	}
 
@@ -185,6 +264,18 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func (c Config) TieringWatches() []tiering.EffectiveWatch {
+	watches := make([]tiering.EffectiveWatch, 0, len(c.Watches))
+	for _, watch := range c.Watches {
+		watches = append(watches, tiering.EffectiveWatch{
+			Database: watch.Database,
+			Table:    watch.Table,
+			Settings: watch.TierSettings,
+		})
+	}
+	return watches
 }
 
 // IsEnabled reports whether the frontend/API server should start. It defaults

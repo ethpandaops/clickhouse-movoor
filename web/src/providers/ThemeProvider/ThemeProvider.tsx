@@ -77,19 +77,7 @@ export function ThemeProvider({ children }: ThemeProviderProps): JSX.Element {
     setMode(newMode);
   }, []);
 
-  // Backward compatible alias for callers that set explicit theme values.
-  const setTheme = useCallback((newTheme: Theme): void => {
-    setMode(newTheme);
-  }, []);
-
-  const clearTheme = useCallback((): void => {
-    setMode('system');
-  }, []);
-
-  const value = useMemo(
-    () => ({ mode, theme, setThemeMode, setTheme, clearTheme }),
-    [mode, theme, setThemeMode, setTheme, clearTheme]
-  );
+  const value = useMemo(() => ({ mode, theme, setThemeMode }), [mode, theme, setThemeMode]);
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 }

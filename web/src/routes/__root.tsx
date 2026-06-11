@@ -1,11 +1,23 @@
 import { type JSX } from 'react';
 import { createRootRoute, HeadContent, Link, Outlet } from '@tanstack/react-router';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ThemeProvider } from '@/providers/ThemeProvider';
 import { Brand } from '@/components/Layout/Brand';
 import { ThemeToggle } from '@/components/Layout/ThemeToggle';
+import { pushToast, Toaster } from '@/components/Feedback/Toaster';
+import { errorMessage } from '@/utils/format';
 
 const queryClient = new QueryClient({
+  // Backstop so no mutation can ever fail silently: anything without local
+  // error UI (marked via meta.errorHandled) surfaces as a persistent toast.
+  mutationCache: new MutationCache({
+    onError: (error, _variables, _context, mutation) => {
+      if (mutation.meta?.errorHandled === true) {
+        return;
+      }
+      pushToast({ title: 'Action failed', detail: errorMessage(error) });
+    },
+  }),
   defaultOptions: {
     queries: {
       retry: 1,
@@ -19,9 +31,11 @@ function RootComponent(): JSX.Element {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <HeadContent />
-        <div className="min-h-dvh bg-background text-foreground">
+        {/* Header height var: pages offset sticky elements with it; it is unset
+            outside this shell (e.g. Storybook), where they fall back to 0. */}
+        <div className="min-h-dvh bg-background text-foreground [--app-header-height:3.5rem]">
           <header className="sticky top-0 z-40 border-b border-border bg-surface/80 backdrop-blur-sm">
-            <div className="mx-auto flex h-14 max-w-[1800px] items-center justify-between gap-4 px-4 sm:px-6">
+            <div className="mx-auto flex h-(--app-header-height) max-w-[1800px] items-center justify-between gap-4 px-4 sm:px-6">
               <Link
                 to="/"
                 className="flex min-w-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
@@ -34,6 +48,7 @@ function RootComponent(): JSX.Element {
           <main className="px-4 py-6 sm:px-6">
             <Outlet />
           </main>
+          <Toaster />
         </div>
       </ThemeProvider>
     </QueryClientProvider>

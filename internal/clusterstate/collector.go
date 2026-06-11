@@ -309,9 +309,7 @@ func (c *Collector) collectWatchedPartBytesByDisk(ctx context.Context, client ch
 			}
 			usedByDisk[disk] += used
 		}
-		if closeErr := rows.Close(); closeErr != nil {
-			return nil, closeErr
-		}
+		_ = rows.Close()
 		if rowsErr := rows.Err(); rowsErr != nil {
 			return nil, rowsErr
 		}

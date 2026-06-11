@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: build build-web generate lint lint-openapi fmt test test-integration clean tidy vuln modernize-check audit check-release run test/cover setup-frontend help
+.PHONY: build build-web generate lint lint-openapi fmt test test-integration clean tidy vuln modernize-check audit check-release run test/cover help
 
 BUILD_DIR := ./cmd/clickhouse-movoor
 BINARY := clickhouse-movoor
@@ -8,22 +8,16 @@ COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 
-## setup-frontend: ensure web/dist/index.html exists for embed
-setup-frontend:
-	@mkdir -p web/dist
-	@test -f web/dist/index.html || echo '<!doctype html><html><head><title>clickhouse-movoor</title></head><body><h1>clickhouse-movoor</h1></body></html>' > web/dist/index.html
-
 ## build-web: build embedded frontend assets
-build-web: setup-frontend
-	@if command -v pnpm >/dev/null 2>&1; then \
-		echo "building embedded web assets with pnpm"; \
-		cd web && pnpm build; \
-	else \
-		echo "pnpm not found, skipping web build and using existing web/dist assets"; \
+build-web:
+	@if ! command -v pnpm >/dev/null 2>&1; then \
+		echo "pnpm not found; install pnpm to build embedded web assets" >&2; \
+		exit 1; \
 	fi
+	cd web && pnpm build
 
-## build: compile the binary with embedded frontend
-build: setup-frontend
+## build: build frontend assets and compile the binary with embedded frontend
+build: build-web
 	go build -tags=webui -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
 
 ## generate: run go generate
@@ -53,7 +47,7 @@ test:
 ## test-integration: run ClickHouse-backed integration tests
 test-integration:
 	docker compose -f dev/clickhouse-2s2r/docker-compose.yml up -d --wait
-	MOVOOR_CLICKHOUSE_INTEGRATION=1 go test ./internal/clusterstate ./internal/server -count=1 -v
+	MOVOOR_CLICKHOUSE_INTEGRATION=1 go test ./internal/clusterstate ./internal/server ./internal/tiering -count=1 -v
 
 ## clean: remove build outputs
 clean:

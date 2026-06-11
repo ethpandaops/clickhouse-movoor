@@ -344,6 +344,151 @@ type conditionResponse struct {
 	Links       map[string]string `json:"links"`
 }
 
+type tieringPlanResponse struct {
+	Tables []tieringTablePlanResponse `json:"tables"`
+	Items  []tieringPartitionResponse `json:"items"`
+}
+
+type tieringTablePlanResponse struct {
+	NodeID         string                     `json:"nodeId"`
+	Database       string                     `json:"database"`
+	Table          string                     `json:"table"`
+	ReconciledAt   time.Time                  `json:"reconciledAt"`
+	TickDurationMs int                        `json:"tickDurationMs"`
+	Generation     string                     `json:"generation"`
+	LastError      *string                    `json:"lastError"`
+	Partitions     int                        `json:"partitions"`
+	Actionable     int                        `json:"actionable"`
+	Conditions     []tieringConditionResponse `json:"conditions"`
+}
+
+type tieringPartitionResponse struct {
+	NodeID        string                     `json:"nodeId"`
+	Shard         string                     `json:"shard"`
+	Replica       string                     `json:"replica"`
+	Database      string                     `json:"database"`
+	Table         string                     `json:"table"`
+	Partition     string                     `json:"partition"`
+	PartitionID   string                     `json:"partitionId"`
+	Status        string                     `json:"status"`
+	Decision      string                     `json:"decision"`
+	Reason        string                     `json:"reason"`
+	Rows          string                     `json:"rows"`
+	BytesOnDisk   string                     `json:"bytesOnDisk"`
+	ActiveParts   string                     `json:"activeParts"`
+	Disks         []tieringDiskPartResponse  `json:"disks"`
+	TargetDisk    string                     `json:"targetDisk"`
+	HotVolume     string                     `json:"hotVolume,omitempty"`
+	Policy        tieringPolicyResponse      `json:"policy"`
+	Conditions    []tieringConditionResponse `json:"conditions"`
+	Hold          *tieringHoldDetailResponse `json:"hold,omitempty"`
+	StateToken    string                     `json:"stateToken"`
+	ReconciledAt  time.Time                  `json:"reconciledAt"`
+	EffectiveMode string                     `json:"effectiveMode"`
+}
+
+type tieringDiskPartResponse struct {
+	Disk  string `json:"disk"`
+	Parts string `json:"parts"`
+}
+
+type tieringPolicyResponse struct {
+	Mode                   string `json:"mode"`
+	AgeBasis               string `json:"ageBasis"`
+	OlderThan              string `json:"olderThan,omitempty"`
+	Field                  string `json:"field,omitempty"`
+	KeepLast               string `json:"keepLast,omitempty"`
+	QuietFor               string `json:"quietFor"`
+	TierFrozenAfter        string `json:"tierFrozenAfter"`
+	TargetDisk             string `json:"targetDisk"`
+	HotVolume              string `json:"hotVolume,omitempty"`
+	OptimizeToParts        string `json:"optimizeToParts"`
+	SkipOptimize           bool   `json:"skipOptimize"`
+	OptimizeOn             string `json:"optimizeOn"`
+	OptimizeSkipAboveBytes string `json:"optimizeSkipAboveBytes"`
+	ResplitStrategy        string `json:"resplitStrategy"`
+	ResplitQuietFor        string `json:"resplitQuietFor"`
+	FragmentAbovePartCount string `json:"fragmentAbovePartCount"`
+}
+
+type tieringHoldDetailResponse struct {
+	Gate         string     `json:"gate"`
+	Window       string     `json:"window,omitempty"`
+	LastInsertAt *time.Time `json:"lastInsertAt,omitempty"`
+	LastChangeAt *time.Time `json:"lastChangeAt,omitempty"`
+	ReleasesAt   *time.Time `json:"releasesAt,omitempty"`
+	RetryAt      *time.Time `json:"retryAt,omitempty"`
+	Failures     int        `json:"failures,omitempty"`
+}
+
+type tieringConditionResponse struct {
+	Severity    string    `json:"severity"`
+	Code        string    `json:"code"`
+	Message     string    `json:"message"`
+	ObservedAt  time.Time `json:"observedAt"`
+	NodeID      string    `json:"nodeId,omitempty"`
+	Database    string    `json:"database,omitempty"`
+	Table       string    `json:"table,omitempty"`
+	Partition   string    `json:"partition,omitempty"`
+	PartitionID string    `json:"partitionId,omitempty"`
+}
+
+type tieringInFlightLegResponse struct {
+	NodeID      string    `json:"nodeId"`
+	Database    string    `json:"database"`
+	Table       string    `json:"table"`
+	Partition   string    `json:"partition"`
+	PartitionID string    `json:"partitionId"`
+	Action      string    `json:"action"`
+	Bytes       string    `json:"bytes"`
+	StartedAt   time.Time `json:"startedAt"`
+	Source      string    `json:"source"`
+}
+
+type tieringStatusResponse struct {
+	Mode                    string    `json:"mode"`
+	PauseState              string    `json:"pauseState"`
+	PauseReason             string    `json:"pauseReason,omitempty"`
+	MaxConcurrentPartitions int       `json:"maxConcurrentPartitions"`
+	MaxMovesPerCycle        int       `json:"maxMovesPerCycle"`
+	MaxBytesInFlight        string    `json:"maxBytesInFlight"`
+	BytesInFlight           string    `json:"bytesInFlight"`
+	MaxBytesPerDay          string    `json:"maxBytesPerDay"`
+	BytesMovedToday         string    `json:"bytesMovedToday"`
+	UpdatedAt               time.Time `json:"updatedAt"`
+	// InFlight is movoor's intent-level "active now": legs currently
+	// executing, spanning dispatch→converged rather than the brief window the
+	// physical operation is visible in system tables.
+	InFlight []tieringInFlightLegResponse `json:"inFlight"`
+}
+
+type tieringHistoryResponse struct {
+	Items []tieringHistoryEntryResponse `json:"items"`
+}
+
+type tieringHistoryEntryResponse struct {
+	Time        time.Time `json:"time"`
+	NodeID      string    `json:"nodeId"`
+	Database    string    `json:"database"`
+	Table       string    `json:"table"`
+	Partition   string    `json:"partition"`
+	PartitionID string    `json:"partitionId"`
+	Action      string    `json:"action"`
+	Outcome     string    `json:"outcome"`
+	DurationMs  int       `json:"durationMs"`
+	Bytes       string    `json:"bytes"`
+	Error       string    `json:"error,omitempty"`
+	AttemptID   string    `json:"attemptId,omitempty"`
+}
+
+type tieringApplyRequest struct {
+	StateToken string `json:"stateToken"`
+}
+
+type tieringApplyResponse struct {
+	Item tieringHistoryEntryResponse `json:"item"`
+}
+
 // listResponse is the envelope for plain list endpoints.
 type listResponse[T any] struct {
 	Collection collectionResponse `json:"collection"`

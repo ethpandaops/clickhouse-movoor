@@ -85,6 +85,7 @@
 
   /* Animations */
   --animate-fade-in: fade-in 0.5s ease-out forwards;
+  --animate-row-flash: row-flash 1.8s ease-out;
 
   @keyframes fade-in {
     0% {
@@ -94,6 +95,16 @@
     100% {
       opacity: 1;
       transform: translateY(0);
+    }
+  }
+
+  @keyframes row-flash {
+    0%,
+    35% {
+      background-color: color-mix(in oklab, var(--color-primary) 18%, transparent);
+    }
+    100% {
+      background-color: transparent;
     }
   }
 }

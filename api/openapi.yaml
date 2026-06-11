@@ -3,12 +3,13 @@ info:
   title: clickhouse-movoor API
   version: 0.1.0
   description: |
-    Read-only operator API for clickhouse-movoor.
+    Operator API for clickhouse-movoor.
 
     Movoor is configured with every ClickHouse node endpoint and fans out to
-    those nodes per request. The API returns that request-time collection with
-    per-node evidence preserved. It does not expose a ClickHouse cluster-mode
-    scope parameter and it does not return cached state.
+    those nodes for cluster-state reads. Those endpoints return request-time
+    collection with per-node evidence preserved. Tiering endpoints expose the
+    controller's cached plan, runtime controls, and action history. The API
+    does not expose a ClickHouse cluster-mode scope parameter.
 
     Exact ClickHouse integer and decimal values are returned as named string
     scalar types to avoid precision loss. Movoor-computed elapsed seconds,
@@ -32,6 +33,8 @@ tags:
     description: ClickHouse work currently relevant to partition movement.
   - name: conditions
     description: Flattened operator triage conditions across nodes and tables.
+  - name: tiering
+    description: Cached tiering plan, runtime controls, and action history.
 paths:
   /healthz:
     get:
@@ -100,56 +103,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StorageDisksResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /storage/policies:
-    get:
-      operationId: listStoragePolicies
-      summary: List storage policies
-      description: Returns storage policy and volume layout observed on each node.
-      tags:
-        - storage
-      parameters:
-        - $ref: "#/components/parameters/NodeIdQuery"
-        - $ref: "#/components/parameters/PolicyQuery"
-      responses:
-        "200":
-          description: Storage policies observed on configured nodes.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StoragePoliciesResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-
-  /storage/policy-checks:
-    get:
-      operationId: listStoragePolicyChecks
-      summary: Check storage policy drift
-      description: Compares movoor target-disk configuration with what every node reports.
-      tags:
-        - storage
-      parameters:
-        - $ref: "#/components/parameters/NodeIdQuery"
-        - $ref: "#/components/parameters/PolicyQuery"
-        - $ref: "#/components/parameters/StorageCheckStatusQuery"
-        - $ref: "#/components/parameters/SeverityQuery"
-      responses:
-        "200":
-          description: Storage policy checks and drift conditions.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/StoragePolicyChecksResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "503":
@@ -496,6 +449,204 @@ paths:
         "500":
           $ref: "#/components/responses/InternalServerError"
 
+  /tiering/plan:
+    get:
+      operationId: getTieringPlan
+      summary: Get tiering plan
+      description: |
+        Returns the controller's cached per-node table snapshots. Unlike the
+        cluster explorer endpoints, this endpoint does not query ClickHouse on
+        demand; every table carries the reconcile timestamp, generation, and
+        any last observation error for that cached plan.
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/TieringStatusQuery"
+        - $ref: "#/components/parameters/TieringDecisionQuery"
+      responses:
+        "200":
+          description: Cached tiering plan snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringPlanResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/status:
+    get:
+      operationId: getTieringStatus
+      summary: Get tiering controller status
+      description: Returns runtime dispatch state, rate limits, and in-flight tiering legs.
+      tags:
+        - tiering
+      responses:
+        "200":
+          description: Current tiering runtime status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/history:
+    get:
+      operationId: getTieringHistory
+      summary: List tiering action history
+      description: Returns the in-memory action ring buffer. Structured logs are the durable history.
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+      responses:
+        "200":
+          description: Recent tiering action history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringHistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/pause:
+    post:
+      operationId: pauseTiering
+      summary: Pause tiering dispatch
+      description: Stops dispatching new tiering actions. Existing in-flight work is allowed to drain.
+      tags:
+        - tiering
+      responses:
+        "202":
+          description: Pause accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/resume:
+    post:
+      operationId: resumeTiering
+      summary: Resume tiering dispatch
+      description: Allows the controller to dispatch new tiering actions again.
+      tags:
+        - tiering
+      responses:
+        "202":
+          description: Resume accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/tables/{database}/{table}/partitions/{partitionId}/apply:
+    post:
+      operationId: applyTieringPartition
+      summary: Apply one tiering decision
+      description: |
+        Runs one supervised executor attempt for the partition's current
+        actionable verdict. The request must include nodeId and the stateToken
+        observed from /tiering/plan; stale tokens return 409.
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/PartitionIdPath"
+        - $ref: "#/components/parameters/NodeIdQueryRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TieringApplyRequest"
+      responses:
+        "202":
+          description: Apply accepted and completed for the current implementation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringApplyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/tables/{database}/{table}/partitions/{partitionId}/retry:
+    post:
+      operationId: retryTieringPartition
+      summary: Retry one stalled tiering partition
+      description: |
+        Re-runs one supervised executor attempt for a stalled partition. The
+        request must include nodeId and the current stateToken from
+        /tiering/plan; stale tokens return 409.
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/PartitionIdPath"
+        - $ref: "#/components/parameters/NodeIdQueryRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TieringApplyRequest"
+      responses:
+        "202":
+          description: Retry accepted and completed for the current implementation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringApplyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
   parameters:
     ActiveQuery:
@@ -560,7 +711,7 @@ components:
       schema:
         type: string
         examples:
-          - s3_cache
+          - cold_disk
     DiskTypeQuery:
       name: type
       in: query
@@ -663,6 +814,15 @@ components:
         type: string
         examples:
           - shard1-replica1
+    NodeIdQueryRequired:
+      name: nodeId
+      in: query
+      required: true
+      description: Movoor configured node id. Tiering actions are node-local.
+      schema:
+        type: string
+        examples:
+          - shard1-replica1
     OperationKindQuery:
       name: kind
       in: query
@@ -698,20 +858,21 @@ components:
         type: string
         examples:
           - d82d64de29c8683be4aad2f0fd38d74e
+    PartitionIdPath:
+      name: partitionId
+      in: path
+      required: true
+      description: ClickHouse partition_id verbatim.
+      schema:
+        type: string
+        examples:
+          - d82d64de29c8683be4aad2f0fd38d74e
     PlacementQuery:
       name: placement
       in: query
       description: Filter partitions by API-owned target-disk placement. Invalid values return 400.
       schema:
         $ref: "#/components/schemas/Placement"
-    PolicyQuery:
-      name: policy
-      in: query
-      description: Filter by ClickHouse storage policy name.
-      schema:
-        type: string
-        examples:
-          - movoor_tiered
     QueueTypeQuery:
       name: type
       in: query
@@ -752,12 +913,6 @@ components:
         type: string
         examples:
           - shard1
-    StorageCheckStatusQuery:
-      name: status
-      in: query
-      description: Filter storage policy checks by API-owned status. Invalid values return 400.
-      schema:
-        $ref: "#/components/schemas/StorageCheckStatus"
     StoragePolicyQuery:
       name: storagePolicy
       in: query
@@ -790,10 +945,28 @@ components:
       schema:
         type: string
         format: date-time
+    TieringDecisionQuery:
+      name: decision
+      in: query
+      description: Filter tiering plan entries by derived decision.
+      schema:
+        $ref: "#/components/schemas/TieringDecision"
+    TieringStatusQuery:
+      name: status
+      in: query
+      description: Filter tiering plan entries by observed status.
+      schema:
+        $ref: "#/components/schemas/TieringPartitionStatus"
 
   responses:
     BadRequest:
       description: Malformed request or unsupported closed-enum query parameter.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+    Conflict:
+      description: State token mismatch or action cannot apply to the current plan.
       content:
         application/problem+json:
           schema:
@@ -830,12 +1003,6 @@ components:
       description: Exact signed ClickHouse integer encoded as decimal text.
       examples:
         - "0"
-    DecimalString:
-      type: string
-      pattern: "^-?[0-9]+(\\.[0-9]+)?$"
-      description: Exact ClickHouse decimal or float value encoded as decimal text.
-      examples:
-        - "0.1"
     NullableUInt64String:
       anyOf:
         - $ref: "#/components/schemas/UInt64String"
@@ -958,13 +1125,70 @@ components:
         - mutation
         - fetch
         - replication_queue
-    StorageCheckStatus:
+    TieringMode:
       type: string
-      description: API-owned storage configuration check status.
+      description: Tiering execution mode.
       enum:
-        - ok
-        - mismatch
-        - missing
+        - off
+        - plan
+        - enforce
+    TieringPartitionStatus:
+      type: string
+      description: Derived physical tiering status.
+      enum:
+        - hot
+        - ready
+        - tiered
+        - split
+        - stalled
+        - misconfigured
+    TieringDecision:
+      type: string
+      description: |
+        Derived action the controller would issue for this partition. Each
+        actionable decision is a single convergence leg; multi-step flows
+        (e.g. the remerge strategy's consolidate, optimize, tier sequence)
+        chain through re-classification across reconcile cycles. The
+        consolidate leg co-locates a split partition's parts on the table's
+        optimizeOn side before the merge.
+      enum:
+        - none
+        - keep
+        - hold
+        - consolidate
+        - optimize
+        - tier
+        - append
+    TieringPauseState:
+      type: string
+      description: Runtime dispatch state.
+      enum:
+        - running
+        - stopping
+        - stopped
+    TieringAgeBasis:
+      type: string
+      enum:
+        - partitionTime
+        - frontier
+    TieringResplitStrategy:
+      type: string
+      enum:
+        - auto
+        - remerge
+        - append
+        - hold
+    TieringOptimizeSide:
+      type: string
+      description: |
+        Where the optimize leg runs. This also decides which direction a split
+        partition's parts move to co-locate before the merge: hot pulls cold
+        strays back for the round-trip; cold appends hot strays and merges in
+        place. Cold-side merges are intended only for target disks where FINAL
+        merges are operationally acceptable.
+      enum:
+        - hot
+        - cold
 
     CollectionWarning:
       type: object
@@ -1220,7 +1444,7 @@ components:
               type: string
               format: uri
               examples:
-                - http://clickhouse-shard1-replica1:8123
+                - clickhouse://clickhouse-shard1-replica1:9000
             reachable:
               type: boolean
             observedAt:
@@ -1304,7 +1528,7 @@ components:
             disk:
               type: string
               examples:
-                - s3_cache
+                - cold_disk
             type:
               type: string
               description: Open ClickHouse disk type.
@@ -1333,155 +1557,6 @@ components:
               $ref: "#/components/schemas/NullableUInt64String"
             usedByActivePartsBytes:
               $ref: "#/components/schemas/UInt64String"
-
-    StoragePoliciesResponse:
-      type: object
-      required:
-        - collection
-        - items
-      additionalProperties: false
-      properties:
-        collection:
-          $ref: "#/components/schemas/CollectionMeta"
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/StoragePolicy"
-    StoragePolicy:
-      type: object
-      required:
-        - nodeId
-        - policy
-        - volumes
-        - conditions
-      additionalProperties: false
-      properties:
-        nodeId:
-          type: string
-        policy:
-          type: string
-        volumes:
-          type: array
-          items:
-            $ref: "#/components/schemas/StorageVolume"
-        conditions:
-          type: array
-          items:
-            $ref: "#/components/schemas/EmbeddedCondition"
-    StorageVolume:
-      type: object
-      required:
-        - name
-        - priority
-        - disks
-        - maxDataPartSizeBytes
-        - moveFactor
-      additionalProperties: false
-      properties:
-        name:
-          type: string
-          examples:
-            - cold
-        priority:
-          type: integer
-          minimum: 0
-        disks:
-          type: array
-          items:
-            type: string
-        maxDataPartSizeBytes:
-          $ref: "#/components/schemas/UInt64String"
-        moveFactor:
-          $ref: "#/components/schemas/DecimalString"
-
-    StoragePolicyChecksResponse:
-      type: object
-      required:
-        - collection
-        - expected
-        - items
-      additionalProperties: false
-      properties:
-        collection:
-          $ref: "#/components/schemas/CollectionMeta"
-        expected:
-          $ref: "#/components/schemas/TargetDiskExpectation"
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/StoragePolicyCheck"
-    TargetDiskExpectation:
-      type: object
-      required:
-        - policy
-        - targetDisk
-        - targetVolumes
-        - watchedDisks
-      additionalProperties: false
-      properties:
-        policy:
-          type: string
-          examples:
-            - movoor_tiered
-        targetDisk:
-          type: string
-          examples:
-            - s3_cache
-        targetVolumes:
-          type: array
-          items:
-            type: string
-        watchedDisks:
-          type: array
-          items:
-            type: string
-    StoragePolicyCheck:
-      allOf:
-        - $ref: "#/components/schemas/NodeRef"
-        - type: object
-          required:
-            - policy
-            - status
-            - checks
-            - conditions
-          additionalProperties: false
-          properties:
-            policy:
-              type: string
-            status:
-              $ref: "#/components/schemas/StorageCheckStatus"
-            checks:
-              type: array
-              items:
-                $ref: "#/components/schemas/StoragePolicyCheckItem"
-            conditions:
-              type: array
-              items:
-                $ref: "#/components/schemas/EmbeddedCondition"
-    StoragePolicyCheckItem:
-      type: object
-      required:
-        - code
-        - severity
-        - ok
-        - expected
-        - actual
-        - message
-      additionalProperties: false
-      properties:
-        code:
-          type: string
-          description: Open storage check code.
-        severity:
-          $ref: "#/components/schemas/Severity"
-        ok:
-          type: boolean
-        expected:
-          description: Expected value from movoor configuration.
-        actual:
-          description: Actual value observed from ClickHouse.
-        message:
-          type: string
 
     TablesResponse:
       type: object
@@ -2478,6 +2553,407 @@ components:
         withErrors:
           type: integer
           minimum: 0
+
+    TieringPlanResponse:
+      type: object
+      required:
+        - tables
+        - items
+      additionalProperties: false
+      properties:
+        tables:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringTablePlan"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringPartition"
+    TieringTablePlan:
+      type: object
+      required:
+        - nodeId
+        - database
+        - table
+        - reconciledAt
+        - tickDurationMs
+        - generation
+        - lastError
+        - partitions
+        - actionable
+        - conditions
+      additionalProperties: false
+      properties:
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        reconciledAt:
+          type: string
+          format: date-time
+        tickDurationMs:
+          type: integer
+          minimum: 0
+        generation:
+          type: string
+        lastError:
+          $ref: "#/components/schemas/NullableString"
+        partitions:
+          type: integer
+          minimum: 0
+        actionable:
+          type: integer
+          minimum: 0
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringCondition"
+    TieringPartition:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - database
+            - table
+            - partition
+            - partitionId
+            - status
+            - decision
+            - reason
+            - rows
+            - bytesOnDisk
+            - activeParts
+            - disks
+            - targetDisk
+            - policy
+            - conditions
+            - stateToken
+            - reconciledAt
+            - effectiveMode
+          additionalProperties: false
+          properties:
+            database:
+              type: string
+            table:
+              type: string
+            partition:
+              type: string
+            partitionId:
+              type: string
+            status:
+              $ref: "#/components/schemas/TieringPartitionStatus"
+            decision:
+              $ref: "#/components/schemas/TieringDecision"
+            reason:
+              type: string
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            bytesOnDisk:
+              $ref: "#/components/schemas/UInt64String"
+            activeParts:
+              $ref: "#/components/schemas/UInt64String"
+            disks:
+              type: array
+              items:
+                $ref: "#/components/schemas/TieringDiskPart"
+            targetDisk:
+              type: string
+            hotVolume:
+              type: string
+            policy:
+              $ref: "#/components/schemas/TieringPolicy"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/TieringCondition"
+            hold:
+              $ref: "#/components/schemas/TieringHoldDetail"
+            stateToken:
+              type: string
+              description: CAS token required by apply and retry calls.
+            reconciledAt:
+              type: string
+              format: date-time
+            effectiveMode:
+              $ref: "#/components/schemas/TieringMode"
+    TieringHoldDetail:
+      type: object
+      description: |
+        Structured explanation of a hold/keep verdict: which gate is holding
+        the partition, the clock it is waiting on, and — where computable —
+        when it releases. successor-activity releases at the dead-group
+        horizon unless a newer sibling receives inserts first; stalled holds
+        carry the retry schedule instead.
+      required:
+        - gate
+      additionalProperties: false
+      properties:
+        gate:
+          type: string
+          description: >-
+            One of replica-health, mutation, part-log-required, insert-quiet,
+            physical-quiet, successor-activity, age, or stalled.
+        window:
+          type: string
+          description: Quiet/age window the gate applies.
+        lastInsertAt:
+          type: string
+          format: date-time
+        lastChangeAt:
+          type: string
+          format: date-time
+        releasesAt:
+          type: string
+          format: date-time
+        retryAt:
+          type: string
+          format: date-time
+        failures:
+          type: integer
+    TieringDiskPart:
+      type: object
+      required:
+        - disk
+        - parts
+      additionalProperties: false
+      properties:
+        disk:
+          type: string
+        parts:
+          $ref: "#/components/schemas/UInt64String"
+    TieringPolicy:
+      type: object
+      required:
+        - mode
+        - ageBasis
+        - quietFor
+        - tierFrozenAfter
+        - targetDisk
+        - optimizeToParts
+        - skipOptimize
+        - optimizeOn
+        - optimizeSkipAboveBytes
+        - resplitStrategy
+        - resplitQuietFor
+        - fragmentAbovePartCount
+      additionalProperties: false
+      properties:
+        mode:
+          $ref: "#/components/schemas/TieringMode"
+        ageBasis:
+          $ref: "#/components/schemas/TieringAgeBasis"
+        olderThan:
+          type: string
+        field:
+          type: string
+        keepLast:
+          $ref: "#/components/schemas/UInt64String"
+        quietFor:
+          type: string
+        tierFrozenAfter:
+          type: string
+        targetDisk:
+          type: string
+        hotVolume:
+          type: string
+        optimizeToParts:
+          $ref: "#/components/schemas/UInt64String"
+        skipOptimize:
+          type: boolean
+        optimizeOn:
+          $ref: "#/components/schemas/TieringOptimizeSide"
+        optimizeSkipAboveBytes:
+          $ref: "#/components/schemas/UInt64String"
+        resplitStrategy:
+          $ref: "#/components/schemas/TieringResplitStrategy"
+        resplitQuietFor:
+          type: string
+        fragmentAbovePartCount:
+          $ref: "#/components/schemas/UInt64String"
+    TieringCondition:
+      type: object
+      required:
+        - severity
+        - code
+        - message
+        - observedAt
+      additionalProperties: false
+      properties:
+        severity:
+          $ref: "#/components/schemas/Severity"
+        code:
+          type: string
+        message:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          type: string
+        partitionId:
+          type: string
+    TieringStatus:
+      type: object
+      required:
+        - mode
+        - pauseState
+        - maxConcurrentPartitions
+        - maxMovesPerCycle
+        - maxBytesInFlight
+        - bytesInFlight
+        - maxBytesPerDay
+        - bytesMovedToday
+        - updatedAt
+        - inFlight
+      additionalProperties: false
+      properties:
+        mode:
+          $ref: "#/components/schemas/TieringMode"
+        pauseState:
+          $ref: "#/components/schemas/TieringPauseState"
+        pauseReason:
+          type: string
+        inFlight:
+          type: array
+          description: |
+            Movoor's intent-level "active now": convergence legs currently
+            executing, spanning the whole dispatch-to-converged window rather
+            than the brief moment the physical operation is visible in
+            system.moves/system.merges.
+          items:
+            $ref: "#/components/schemas/TieringInFlightLeg"
+        maxConcurrentPartitions:
+          type: integer
+          minimum: 0
+          description: >-
+            Concurrent leg cap per node (nodes own independent disks and do
+            not starve each other); maxBytesInFlight is the aggregate ceiling.
+        maxMovesPerCycle:
+          type: integer
+          minimum: 0
+        maxBytesInFlight:
+          $ref: "#/components/schemas/UInt64String"
+        bytesInFlight:
+          $ref: "#/components/schemas/UInt64String"
+        maxBytesPerDay:
+          $ref: "#/components/schemas/UInt64String"
+        bytesMovedToday:
+          $ref: "#/components/schemas/UInt64String"
+        updatedAt:
+          type: string
+          format: date-time
+    TieringInFlightLeg:
+      type: object
+      required:
+        - nodeId
+        - database
+        - table
+        - partition
+        - partitionId
+        - action
+        - bytes
+        - startedAt
+        - source
+      additionalProperties: false
+      properties:
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          type: string
+        partitionId:
+          type: string
+        action:
+          $ref: "#/components/schemas/TieringDecision"
+        bytes:
+          $ref: "#/components/schemas/UInt64String"
+        startedAt:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [dispatch, supervised]
+          description: dispatch = autonomous enforce loop; supervised = operator apply.
+    TieringHistoryResponse:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringHistoryEntry"
+    TieringHistoryEntry:
+      type: object
+      required:
+        - time
+        - nodeId
+        - database
+        - table
+        - partition
+        - partitionId
+        - action
+        - outcome
+        - durationMs
+        - bytes
+      additionalProperties: false
+      properties:
+        time:
+          type: string
+          format: date-time
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          type: string
+        partitionId:
+          type: string
+        action:
+          $ref: "#/components/schemas/TieringDecision"
+        outcome:
+          type: string
+          examples:
+            - success
+        durationMs:
+          type: integer
+          minimum: 0
+        bytes:
+          $ref: "#/components/schemas/UInt64String"
+        error:
+          type: string
+        attemptId:
+          type: string
+    TieringApplyRequest:
+      type: object
+      required:
+        - stateToken
+      additionalProperties: false
+      properties:
+        stateToken:
+          type: string
+    TieringApplyResponse:
+      type: object
+      required:
+        - item
+      additionalProperties: false
+      properties:
+        item:
+          $ref: "#/components/schemas/TieringHistoryEntry"
 
     ConditionsResponse:
       type: object

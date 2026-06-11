@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
@@ -112,8 +113,12 @@ func (s *server) requireWatch(w http.ResponseWriter, r *http.Request) (StateRead
 }
 
 func (s *server) writeJSON(w http.ResponseWriter, r *http.Request, body any) {
+	s.writeJSONStatus(w, r, http.StatusOK, body)
+}
+
+func (s *server) writeJSONStatus(w http.ResponseWriter, r *http.Request, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		s.log.ErrorContext(r.Context(), "encode api response", "error", err)
@@ -165,7 +170,7 @@ func apiWarnings(warnings []clusterstate.Warning) []warningResponse {
 func apiNode(item clusterstate.NodeStatus) nodeResponse {
 	node := nodeResponse{
 		nodeRef:    apiNodeRef(item.Node),
-		Endpoint:   "clickhouse://" + item.Node.Addr,
+		Endpoint:   apiNodeEndpoint(item.Node.Addr),
 		Reachable:  item.Reachable,
 		ObservedAt: item.ObservedAt,
 		Version:    item.Version,
@@ -177,6 +182,14 @@ func apiNode(item clusterstate.NodeStatus) nodeResponse {
 	}
 
 	return node
+}
+
+func apiNodeEndpoint(addr string) string {
+	if at := strings.LastIndex(addr, "@"); at >= 0 {
+		addr = addr[at+1:]
+	}
+
+	return "clickhouse://" + addr
 }
 
 func apiDisk(item clusterstate.Disk) diskResponse {
@@ -849,7 +862,7 @@ func writeBadParameter(w http.ResponseWriter, r *http.Request, parameter string,
 		Type:     "about:blank",
 		Title:    http.StatusText(http.StatusBadRequest),
 		Status:   http.StatusBadRequest,
-		Detail:   "request parameter validation failed",
+		Detail:   detail,
 		Instance: r.URL.RequestURI(),
 		Errors: []problemError{
 			{Parameter: parameter, Detail: detail},

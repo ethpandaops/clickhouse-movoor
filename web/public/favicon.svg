@@ -14,7 +14,7 @@
     <rect x="52" y="56" width="152" height="36" rx="10" fill="#00ff88" />
     <rect x="52" y="110" width="152" height="36" rx="10" fill="#00ff88" />
 
-    <!-- cold partition: tiering out to object storage -->
+    <!-- cold partition: moving to the configured target disk -->
     <g>
       <rect x="124" y="164" width="152" height="36" rx="10" fill="#ff33cc" />
       <animateTransform

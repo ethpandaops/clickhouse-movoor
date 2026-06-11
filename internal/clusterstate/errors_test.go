@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"syscall"
 	"testing"
@@ -31,13 +32,28 @@ func TestIsReachabilityError(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "context canceled is a query error",
+			err:  fmt.Errorf("query: %w", context.Canceled),
+			want: false,
+		},
+		{
 			name: "server exception means reachable",
 			err:  &clickhouse.Exception{Code: 241, Message: "memory limit exceeded"},
 			want: false,
 		},
 		{
+			name: "unexpected eof is unreachable",
+			err:  fmt.Errorf("read: %w", io.ErrUnexpectedEOF),
+			want: true,
+		},
+		{
 			name: "dial refused",
 			err:  &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED},
+			want: true,
+		},
+		{
+			name: "syscall broken pipe is unreachable",
+			err:  syscallMatchError{target: syscall.EPIPE},
 			want: true,
 		},
 		{
@@ -62,6 +78,18 @@ func TestIsReachabilityError(t *testing.T) {
 			require.Equal(t, tt.want, isReachabilityError(tt.err))
 		})
 	}
+}
+
+type syscallMatchError struct {
+	target error
+}
+
+func (e syscallMatchError) Error() string {
+	return e.target.Error()
+}
+
+func (e syscallMatchError) Is(target error) bool {
+	return target == e.target
 }
 
 func TestIsUnknownTableError(t *testing.T) {

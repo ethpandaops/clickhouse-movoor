@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -26,16 +27,22 @@ var (
 	date    = "unknown"
 )
 
+var loadConfigForRun = loadConfig
+
 func main() {
-	if err := run(); err != nil {
+	mainWith(run, os.Exit, os.Stderr)
+}
+
+func mainWith(runFunc func() error, exitFunc func(int), stderr io.Writer) {
+	if err := runFunc(); err != nil {
 		if errors.Is(err, context.Canceled) {
-			_, _ = fmt.Fprintln(os.Stderr, "Cancelled.")
+			_, _ = fmt.Fprintln(stderr, "Cancelled.")
 
 			return
 		}
 
-		_, _ = fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		_, _ = fmt.Fprintf(stderr, "Error: %v\n", err)
+		exitFunc(1)
 	}
 }
 
@@ -49,11 +56,11 @@ func run() error {
 
 	rootCmd := &cobra.Command{
 		Use:           "clickhouse-movoor",
-		Short:         "clickhouse-movoor — skeleton service with an embedded web UI",
+		Short:         "clickhouse-movoor moves cold ClickHouse partitions to a configured target disk",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, err := loadOrDefaultConfig(configFile)
+			cfg, err := loadConfigForRun(configFile)
 			if err != nil {
 				return err
 			}
@@ -125,15 +132,15 @@ func newLogger(level *slog.LevelVar, format string, addSource bool) *slog.Logger
 	}))
 }
 
-// loadOrDefaultConfig loads the config from the given path, falling back to
-// ~/.clickhouse-movoor/config.yaml, then to DefaultConfig when none is found.
-func loadOrDefaultConfig(path string) (movoor.Config, error) {
+// loadConfig loads the config from the given path, falling back to
+// ~/.clickhouse-movoor/config.yaml when --config is omitted.
+func loadConfig(path string) (movoor.Config, error) {
 	if path == "" {
 		path = discoverConfigPath()
 	}
 
 	if path == "" {
-		return movoor.DefaultConfig(), nil
+		return movoor.Config{}, errors.New("config file is required; pass --config or create ~/.clickhouse-movoor/config.yaml")
 	}
 
 	cfg, err := movoor.LoadConfig(path)

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite';
+import { expect, within } from 'storybook/test';
 import { Brand } from './Brand';
 
 const meta = {
@@ -25,4 +26,18 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText('clickhouse-movoor')).toBeInTheDocument();
+    await expect(canvas.getByText('ClickHouse partition tiering')).toBeInTheDocument();
+  },
+};
+
+export const TruncatesInNarrowContainer: Story = {
+  render: () => (
+    <div className="w-32 overflow-hidden rounded-md border border-border p-2">
+      <Brand />
+    </div>
+  ),
+};

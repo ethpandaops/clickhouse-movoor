@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
 )
@@ -17,10 +18,30 @@ type WatchValidationItem struct {
 	Found  bool
 }
 
+// WatchValidationResult summarizes startup watch validation across configured
+// nodes. Items are intentionally not exposed because callers should only need
+// the health envelope; schema problems are returned as errors.
+type WatchValidationResult struct {
+	CollectedAt        time.Time
+	CollectionDuration time.Duration
+	NodesExpected      int
+	NodesResponded     int
+	NodesFailed        int
+	Warnings           []Warning
+}
+
 // ValidateWatches verifies that configured watches point at physical
 // MergeTree-family tables. Distributed tables are intentionally rejected for
 // now because part movement must target local MergeTree storage.
 func (c *Collector) ValidateWatches(ctx context.Context) ([]Warning, error) {
+	result, err := c.ValidateWatchesDetailed(ctx)
+
+	return result.Warnings, err
+}
+
+// ValidateWatchesDetailed is ValidateWatches plus the per-node validation
+// summary used by startup health/readiness reporting.
+func (c *Collector) ValidateWatchesDetailed(ctx context.Context) (WatchValidationResult, error) {
 	result := collectPerNode(ctx, c, len(c.watches), func(ctx context.Context, client chclient.Client) ([]WatchValidationItem, *Warning) {
 		items, err := c.collectWatchValidationItems(ctx, client)
 		if err != nil {
@@ -29,8 +50,16 @@ func (c *Collector) ValidateWatches(ctx context.Context) ([]Warning, error) {
 
 		return items, nil
 	})
+	summary := WatchValidationResult{
+		CollectedAt:        result.CollectedAt,
+		CollectionDuration: result.CollectionDuration,
+		NodesExpected:      result.NodesExpected,
+		NodesResponded:     result.NodesResponded,
+		NodesFailed:        result.NodesFailed,
+		Warnings:           append([]Warning(nil), result.Warnings...),
+	}
 	if result.NodesResponded == 0 {
-		return result.Warnings, errors.New("no ClickHouse node responded during watch validation")
+		return summary, errors.New("no ClickHouse node responded during watch validation")
 	}
 
 	var err error
@@ -50,7 +79,7 @@ func (c *Collector) ValidateWatches(ctx context.Context) ([]Warning, error) {
 		}
 	}
 
-	return result.Warnings, err
+	return summary, err
 }
 
 func (c *Collector) collectWatchValidationItems(ctx context.Context, client chclient.Client) ([]WatchValidationItem, error) {
