@@ -49,6 +49,20 @@ func ParseLayout(database string, table string, partitionKey string, settings Ti
 		Basis:        settings.Age.Basis,
 		Generation:   expr + "|" + string(settings.Age.Basis),
 	}
+	// A bare column can itself be the partitionTime age element: tables
+	// partitioned directly on a Date column (PARTITION BY LogDate) produce
+	// date-literal partition values, exactly like toDate(column). age.field
+	// names the date column in multi-element keys; a single-element key is
+	// unambiguous and needs no hint.
+	bareDateColumn := ""
+	if settings.Age.Basis == AgeBasisPartitionTime {
+		switch {
+		case settings.Age.Field != "":
+			bareDateColumn = settings.Age.Field
+		case len(elements) == 1:
+			bareDateColumn = strings.TrimSpace(elements[0])
+		}
+	}
 	ageElements := 0
 	for _, element := range elements {
 		kind := classifyLayoutElement(element)
@@ -67,6 +81,13 @@ func ParseLayout(database string, table string, partitionKey string, settings Ti
 			layout.AgeField = kind.field
 			layout.TimeFunction = kind.timeFunction
 			layout.TimeZone = kind.timeZone
+		case kind.bareColumn && kind.field == bareDateColumn:
+			ageElements++
+			layout.AgeExpression = element
+			layout.AgeField = kind.field
+			// Date partition values render like toDate(column) buckets:
+			// daily periods that end at the start of the next day.
+			layout.TimeFunction = "toDate"
 		case kind.bareColumn:
 			layout.GroupColumns = append(layout.GroupColumns, element)
 		default:

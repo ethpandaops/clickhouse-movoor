@@ -38,6 +38,26 @@ func TestParseLayoutAndPartitions(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, bare.GroupKey)
 	require.Equal(t, "2026-04-01", bare.AgeString)
+
+	// A table partitioned directly on a Date column needs no time function:
+	// the sole bare column IS the age element, with toDate value semantics.
+	logDateLayout, err := ParseLayout("db", "tbl", "LogDate", timeSettings)
+	require.NoError(t, err)
+	require.Equal(t, "toDate", logDateLayout.TimeFunction)
+	require.Equal(t, "LogDate", logDateLayout.AgeField)
+	require.Empty(t, logDateLayout.GroupColumns)
+	logDate, err := logDateLayout.ParsePartition("2026-05-01")
+	require.NoError(t, err)
+	require.Equal(t, "2026-05-01", logDate.AgeString)
+
+	// Multi-element keys disambiguate the date column via age.field.
+	fieldSettings := DefaultTierSettings()
+	fieldSettings.Age = AgeSettings{Basis: AgeBasisPartitionTime, OlderThan: Duration{Duration: 1}, Field: "LogDate"}
+	groupedLayout, err := ParseLayout("db", "tbl", "(network_id, LogDate)", fieldSettings)
+	require.NoError(t, err)
+	require.Equal(t, "toDate", groupedLayout.TimeFunction)
+	require.Equal(t, "LogDate", groupedLayout.AgeField)
+	require.Equal(t, []string{"network_id"}, groupedLayout.GroupColumns)
 }
 
 func TestParseLayoutErrors(t *testing.T) {

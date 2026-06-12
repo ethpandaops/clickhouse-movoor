@@ -59,6 +59,13 @@ tiering:
   # Per-node cap on concurrently executing partition legs.
   maxConcurrentPartitions: 1
 
+  # Per-node cap on concurrent table observations. Every tiered watch runs its
+  # own reconcile loop; this gate keeps a large watch list from firing all of
+  # its multi-query observation pipelines at a node simultaneously (most
+  # visible at startup, where an unbounded herd makes every observation blow
+  # the shared clickhouse.queryTimeout together).
+  maxConcurrentObservations: 4
+
   safety:
     maxMovesPerCycle: 4
     maxBytesInFlight: 500GiB
@@ -146,6 +153,17 @@ watches:
   #     age:
   #       basis: partitionTime
   #       olderThan: 35d
+
+  # Tables partitioned directly on a bare Date column (PARTITION BY LogDate)
+  # need no time function: a single-column key makes the column the age
+  # element automatically; multi-column keys name it via age.field.
+  # - database: default
+  #   table: logs_local
+  #   tier:
+  #     age:
+  #       basis: partitionTime
+  #       olderThan: 35d
+  #       # field: LogDate # only needed when the key has group columns too
 
   # Frontier age: tier numeric buckets that are behind the current per-group
   # frontier by keepLast. field must be the frontier column used by the table's

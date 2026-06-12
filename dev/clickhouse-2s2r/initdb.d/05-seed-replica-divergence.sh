@@ -20,6 +20,7 @@ test_generic_bucket_block_bucket_local:record_id
 test_generic_bucket_month_start_local:record_id
 test_generic_bucket_month_number_local:record_id
 test_generic_plain_month_local:record_id
+test_generic_logdate_local:record_id
 "
 
 query() {

@@ -72,7 +72,7 @@ FROM
 SQL
 )"
 
-LOCAL_TABLE_LIST="'events_local', 'test_generic_network_month_local', 'test_generic_chain_month_local', 'test_generic_network_block_bucket_local', 'test_generic_block_bucket_local', 'test_generic_start_block_bucket_local', 'test_generic_month_start_local', 'test_generic_month_number_local', 'test_generic_network_only_local', 'test_generic_bucket_only_local', 'test_generic_bucket_block_bucket_local', 'test_generic_bucket_month_start_local', 'test_generic_bucket_month_number_local', 'test_generic_tuple_version_local', 'test_generic_unpartitioned_replacing_local', 'test_generic_plain_month_local', 'test_generic_unpartitioned_plain_local'"
+LOCAL_TABLE_LIST="'events_local', 'test_generic_network_month_local', 'test_generic_chain_month_local', 'test_generic_network_block_bucket_local', 'test_generic_block_bucket_local', 'test_generic_start_block_bucket_local', 'test_generic_month_start_local', 'test_generic_month_number_local', 'test_generic_network_only_local', 'test_generic_bucket_only_local', 'test_generic_bucket_block_bucket_local', 'test_generic_bucket_month_start_local', 'test_generic_bucket_month_number_local', 'test_generic_tuple_version_local', 'test_generic_unpartitioned_replacing_local', 'test_generic_plain_month_local', 'test_generic_unpartitioned_plain_local', 'test_generic_logdate_local'"
 
 STATE_TABLES="
 events_local:record_id
@@ -89,6 +89,7 @@ test_generic_bucket_block_bucket_local:record_id
 test_generic_bucket_month_start_local:record_id
 test_generic_bucket_month_number_local:record_id
 test_generic_plain_month_local:record_id
+test_generic_logdate_local:record_id
 "
 
 SINGLE_PARTITION_TABLES="
@@ -177,7 +178,7 @@ WHERE database = 'movoor_dev'
 SQL
 )"
 
-assert_equals "68" "watched local tables on all replicas" "
+assert_equals "72" "watched local tables on all replicas" "
 SELECT count()
 FROM
 (

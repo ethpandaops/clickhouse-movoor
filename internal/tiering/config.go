@@ -17,6 +17,7 @@ const (
 	DefaultTargetDisk                         = "s3_cache"
 	DefaultInterval                           = 5 * time.Minute
 	DefaultMaxConcurrentPartitions            = 1
+	DefaultMaxConcurrentObservations          = 4
 	DefaultMaxMovesPerCycle                   = 4
 	DefaultMaxBytesInFlight            uint64 = 500 << 30
 	DefaultMaxBytesPerDay              uint64 = 2 << 40
@@ -90,9 +91,15 @@ type Config struct {
 	// MaxConcurrentPartitions caps concurrently executing legs PER NODE —
 	// nodes own independent disks, so the slot pools are independent;
 	// Safety.MaxBytesInFlight is the aggregate cross-node ceiling.
-	MaxConcurrentPartitions int          `yaml:"maxConcurrentPartitions"`
-	Safety                  SafetyConfig `yaml:"safety"`
-	Defaults                TierSettings `yaml:"defaults"`
+	MaxConcurrentPartitions int `yaml:"maxConcurrentPartitions"`
+	// MaxConcurrentObservations caps concurrent table observations PER NODE.
+	// Every watch runs its own reconcile loop; without a bound, hundreds of
+	// loops fire their multi-query observation pipelines at the same node
+	// simultaneously on startup and all of them blow the shared query
+	// timeout together.
+	MaxConcurrentObservations int          `yaml:"maxConcurrentObservations"`
+	Safety                    SafetyConfig `yaml:"safety"`
+	Defaults                  TierSettings `yaml:"defaults"`
 }
 
 //nolint:tagliatelle // Tiering YAML intentionally uses documented camelCase keys.
@@ -159,9 +166,10 @@ type EffectiveWatch struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Mode:                    ModePlan,
-		Interval:                Duration{Duration: DefaultInterval},
-		MaxConcurrentPartitions: DefaultMaxConcurrentPartitions,
+		Mode:                      ModePlan,
+		Interval:                  Duration{Duration: DefaultInterval},
+		MaxConcurrentPartitions:   DefaultMaxConcurrentPartitions,
+		MaxConcurrentObservations: DefaultMaxConcurrentObservations,
 		Safety: SafetyConfig{
 			MaxMovesPerCycle: DefaultMaxMovesPerCycle,
 			MaxBytesInFlight: Bytes{Value: DefaultMaxBytesInFlight},
@@ -203,6 +211,9 @@ func (c *Config) ResolveDefaults() {
 	}
 	if c.MaxConcurrentPartitions == 0 {
 		c.MaxConcurrentPartitions = defaults.MaxConcurrentPartitions
+	}
+	if c.MaxConcurrentObservations == 0 {
+		c.MaxConcurrentObservations = defaults.MaxConcurrentObservations
 	}
 	if c.Safety.MaxMovesPerCycle == 0 {
 		c.Safety.MaxMovesPerCycle = defaults.Safety.MaxMovesPerCycle
@@ -276,6 +287,9 @@ func (c Config) Validate(now time.Time) error {
 	}
 	if c.MaxConcurrentPartitions <= 0 {
 		return errors.New("tiering.maxConcurrentPartitions must be positive")
+	}
+	if c.MaxConcurrentObservations <= 0 {
+		return errors.New("tiering.maxConcurrentObservations must be positive")
 	}
 	if c.Safety.MaxMovesPerCycle <= 0 {
 		return errors.New("tiering.safety.maxMovesPerCycle must be positive")

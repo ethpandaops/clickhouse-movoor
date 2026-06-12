@@ -71,6 +71,7 @@ type controller struct {
 	sideMergeLast    map[string]time.Time
 	kicks            map[string]chan struct{}
 	failureLogs      map[string]failureLogState
+	observeSlots     map[string]chan struct{}
 }
 
 func New(log *slog.Logger, clients []chclient.Client, cfg ControllerConfig) Controller {
@@ -150,6 +151,46 @@ func (c *controller) Start(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// observeTable routes every table observation through a per-node concurrency
+// gate. Each watch runs its own reconcile loop; without the gate, hundreds of
+// loops fire their multi-query observation pipelines at the same node
+// simultaneously on startup, and every one of them blows the shared query
+// timeout together. The observation's query timeout starts after the slot is
+// acquired, so queueing never eats into a tick's query budget.
+func (c *controller) observeTable(ctx context.Context, client chclient.Client, watch EffectiveWatch) (TableObservation, error) {
+	release, ok := c.acquireObserveSlot(ctx, client.Node.ID)
+	if !ok {
+		return TableObservation{}, ctx.Err()
+	}
+	defer release()
+
+	return c.observer.ObserveTable(ctx, client, watch)
+}
+
+func (c *controller) acquireObserveSlot(ctx context.Context, nodeID string) (func(), bool) {
+	c.mu.Lock()
+	if c.observeSlots == nil {
+		c.observeSlots = make(map[string]chan struct{}, len(c.clients))
+	}
+	slots, ok := c.observeSlots[nodeID]
+	if !ok {
+		capacity := c.cfg.Tiering.MaxConcurrentObservations
+		if capacity <= 0 {
+			capacity = DefaultMaxConcurrentObservations
+		}
+		slots = make(chan struct{}, capacity)
+		c.observeSlots[nodeID] = slots
+	}
+	c.mu.Unlock()
+
+	select {
+	case slots <- struct{}{}:
+		return func() { <-slots }, true
+	case <-ctx.Done():
+		return nil, false
+	}
 }
 
 // legContext returns the context background legs run on. It is the

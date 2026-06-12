@@ -1,6 +1,6 @@
-<img align="left" height="50px" src="web/public/favicon.svg">
-  <h1>clickhouse-movoor</h1>
-</img>
+<img align="left" height="50px" style="margin-right: 10px;" src="web/public/favicon.svg">
+<h1>clickhouse-movoor</h1>
+
 
 `clickhouse-movoor` watches ClickHouse MergeTree partitions across configured
 physical nodes and moves cold partitions to a configured ClickHouse disk.

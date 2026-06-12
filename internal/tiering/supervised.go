@@ -53,7 +53,7 @@ func (c *controller) Apply(ctx context.Context, nodeID string, database string, 
 	if err := CheckToken(planned, stateToken); err != nil {
 		return HistoryEntry{}, err
 	}
-	tableObs, err := c.observer.ObserveTable(ctx, client, watch)
+	tableObs, err := c.observeTable(ctx, client, watch)
 	if err != nil {
 		return HistoryEntry{}, err
 	}

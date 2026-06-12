@@ -172,7 +172,7 @@ func (c *controller) reconcileOnce(ctx context.Context, client chclient.Client, 
 		attribute.String("table", watch.Database+"."+watch.Table),
 	)
 	defer span.End()
-	obs, err := c.observer.ObserveTable(ctx, client, watch)
+	obs, err := c.observeTable(ctx, client, watch)
 	if err != nil {
 		if isContextCanceled(ctx, err) {
 			return true
@@ -273,7 +273,7 @@ func (c *controller) clearRepeatedFailure(key string) {
 // belong to the periodic reconcile tick, not a manual action.
 func (c *controller) republishTable(ctx context.Context, client chclient.Client, watch EffectiveWatch) {
 	start := time.Now()
-	obs, err := c.observer.ObserveTable(ctx, client, watch)
+	obs, err := c.observeTable(ctx, client, watch)
 	if err != nil {
 		c.store.PublishError(client.Node.ID, watch.Database, watch.Table, "", err, time.Since(start))
 		return

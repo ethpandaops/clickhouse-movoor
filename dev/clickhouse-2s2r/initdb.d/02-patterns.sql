@@ -286,3 +286,24 @@ SETTINGS
 CREATE TABLE IF NOT EXISTS movoor_dev.test_generic_unpartitioned_plain ON CLUSTER movoor_cluster
 AS movoor_dev.test_generic_unpartitioned_plain_local
 ENGINE = Distributed(movoor_cluster, movoor_dev, test_generic_unpartitioned_plain_local, cityHash64(sequence));
+
+-- Partitioned directly on a bare Date column (no time function), like
+-- production log tables using PARTITION BY LogDate: daily partitions whose
+-- values are date literals.
+CREATE TABLE IF NOT EXISTS movoor_dev.test_generic_logdate_local ON CLUSTER movoor_cluster
+(
+    LogDate Date,
+    record_id UInt64,
+    payload String,
+    updated_at DateTime64(3) DEFAULT now64(3)
+)
+ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/movoor_dev/test_generic_logdate_local', '{replica}', updated_at)
+PARTITION BY LogDate
+ORDER BY (LogDate, record_id)
+SETTINGS
+    storage_policy = 'movoor_tiered',
+    max_bytes_to_merge_at_max_space_in_pool = 0;
+
+CREATE TABLE IF NOT EXISTS movoor_dev.test_generic_logdate ON CLUSTER movoor_cluster
+AS movoor_dev.test_generic_logdate_local
+ENGINE = Distributed(movoor_cluster, movoor_dev, test_generic_logdate_local, cityHash64(record_id));

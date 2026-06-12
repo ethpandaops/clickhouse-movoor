@@ -89,6 +89,7 @@ func TestConfigValidationErrors(t *testing.T) {
 		{name: "mode", mut: func(c *Config) { c.Mode = "bad" }, want: "tiering.mode"},
 		{name: "interval", mut: func(c *Config) { c.Interval = Duration{} }, want: "interval"},
 		{name: "concurrency", mut: func(c *Config) { c.MaxConcurrentPartitions = -1 }, want: "maxConcurrentPartitions"},
+		{name: "observations", mut: func(c *Config) { c.MaxConcurrentObservations = -1 }, want: "maxConcurrentObservations"},
 		{name: "moves", mut: func(c *Config) { c.Safety.MaxMovesPerCycle = -1 }, want: "maxMovesPerCycle"},
 		{name: "bytes in flight", mut: func(c *Config) { c.Safety.MaxBytesInFlight = Bytes{} }, want: "maxBytesInFlight"},
 		{name: "bytes per day", mut: func(c *Config) { c.Safety.MaxBytesPerDay = Bytes{} }, want: "maxBytesPerDay"},

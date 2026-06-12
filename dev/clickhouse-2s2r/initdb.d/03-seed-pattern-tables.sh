@@ -22,6 +22,7 @@ test_generic_bucket_block_bucket_local:record_id
 test_generic_bucket_month_start_local:record_id
 test_generic_bucket_month_number_local:record_id
 test_generic_plain_month_local:record_id
+test_generic_logdate_local:record_id
 "
 
 SINGLE_PARTITION_TABLES="
@@ -237,6 +238,34 @@ FROM
     SELECT
         scenario_id,
         toUInt64(scenario_id * 100000 + row_number) AS synthetic_id,
+        row_number
+    FROM
+    (
+        SELECT arrayJoin([1, 2, 3, 4, 5, 6, 7, 8]) AS scenario_id
+    )
+    CROSS JOIN
+    (
+        SELECT number + $row_start AS row_number
+        FROM numbers($row_count)
+    )
+    WHERE scenario_id IN ($scenario_filter)
+)
+SQL
+            ;;
+        test_generic_logdate_local)
+            cat <<SQL
+INSERT INTO $DB.$table
+SELECT
+    base_date AS LogDate,
+    synthetic_id AS record_id,
+    concat('$label-', '$table', '-', toString(scenario_id), '-', toString(row_number)) AS payload,
+    now64(3) AS updated_at
+FROM
+(
+    SELECT
+        scenario_id,
+        toUInt64(scenario_id * 100000 + row_number) AS synthetic_id,
+        today() + toIntervalDay((scenario_id - 8) * 10) AS base_date,
         row_number
     FROM
     (

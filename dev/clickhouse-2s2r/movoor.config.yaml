@@ -157,6 +157,15 @@ watches:
         olderThan: 35d
       skipOptimize: true
 
+  # Partitioned directly on a bare Date column (PARTITION BY LogDate) —
+  # no time function; the sole partition column is the age element.
+  - database: movoor_dev
+    table: test_generic_logdate_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+
   - database: movoor_dev
     table: test_generic_unpartitioned_plain_local
 

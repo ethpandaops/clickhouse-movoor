@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log/slog"
 	"regexp"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -273,6 +275,73 @@ func TestControllerApplyReturnsExecutorFailure(t *testing.T) {
 	require.Len(t, snapshot.Tables[0].Verdicts, 1)
 	require.Equal(t, StatusStalled, snapshot.Tables[0].Verdicts[0].Status)
 	require.Equal(t, DecisionHold, snapshot.Tables[0].Verdicts[0].Decision)
+}
+
+type blockingObserver struct {
+	gate    chan struct{}
+	current atomic.Int32
+	peak    atomic.Int32
+}
+
+func (o *blockingObserver) ObserveTable(context.Context, chclient.Client, EffectiveWatch) (TableObservation, error) {
+	inFlight := o.current.Add(1)
+	defer o.current.Add(-1)
+	for {
+		recorded := o.peak.Load()
+		if inFlight <= recorded || o.peak.CompareAndSwap(recorded, inFlight) {
+			break
+		}
+	}
+	<-o.gate
+
+	return TableObservation{}, nil
+}
+
+func (o *blockingObserver) RefreshPartition(context.Context, chclient.Client, TableObservation, string) (PartitionObservation, error) {
+	return PartitionObservation{}, nil
+}
+
+func TestObserveTableBoundsConcurrencyPerNode(t *testing.T) {
+	t.Parallel()
+
+	observer := &blockingObserver{gate: make(chan struct{})}
+	c := &controller{
+		log:      slog.New(slog.DiscardHandler),
+		cfg:      ControllerConfig{Tiering: Config{MaxConcurrentObservations: 2}},
+		observer: observer,
+	}
+	client := chclient.Client{Node: chclient.Node{ID: "n1"}}
+
+	var wg sync.WaitGroup
+	for range 6 {
+		wg.Go(func() {
+			_, err := c.observeTable(t.Context(), client, EffectiveWatch{})
+			require.NoError(t, err)
+		})
+	}
+	require.Eventually(t, func() bool { return observer.current.Load() == 2 }, time.Second, time.Millisecond)
+	close(observer.gate)
+	wg.Wait()
+	require.Equal(t, int32(2), observer.peak.Load())
+
+	// An unresolved (zero) capacity falls back to the default rather than
+	// deadlocking on an unbuffered channel.
+	bare := &controller{log: slog.New(slog.DiscardHandler), observer: observer}
+	releaseDefault, ok := bare.acquireObserveSlot(t.Context(), "n3")
+	require.True(t, ok)
+	releaseDefault()
+
+	// A caller waiting for a slot honors context cancellation.
+	releaseA, ok := c.acquireObserveSlot(t.Context(), "n2")
+	require.True(t, ok)
+	releaseB, ok := c.acquireObserveSlot(t.Context(), "n2")
+	require.True(t, ok)
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := c.observeTable(cancelled, chclient.Client{Node: chclient.Node{ID: "n2"}}, EffectiveWatch{})
+	require.ErrorIs(t, err, context.Canceled)
+	releaseA()
+	releaseB()
 }
 
 func TestReconcileLoopPublishesBeforePhaseOffset(t *testing.T) {
