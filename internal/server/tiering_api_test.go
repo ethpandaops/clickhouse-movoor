@@ -143,7 +143,11 @@ func TestTieringAPI(t *testing.T) {
 		"/api/v1/tiering/plan?decision=nope",
 	} {
 		body := getTieringJSONStatus(t, srv, query, http.StatusBadRequest)
-		require.Equal(t, "unsupported value", body["detail"], query)
+		detail, isString := body["detail"].(string)
+		require.True(t, isString, query)
+		// The generated server phrases enum rejections; the offending value is
+		// part of the message, the exact wording is not part of the contract.
+		require.Contains(t, detail, "nope", query)
 	}
 
 	status := getTieringJSON(t, srv, "/api/v1/tiering/status")
@@ -188,12 +192,14 @@ func TestTieringAPI(t *testing.T) {
 	require.Equal(t, "pid-ready", retryItem["partitionId"])
 	require.Equal(t, "retry", controller.lastAction)
 
+	// Parameter and body validation is owned by the generated server; the
+	// offending field appears in the detail, the phrasing is ogen's.
 	bad := postTieringJSON(t, srv, "/api/v1/tiering/tables/db/tbl/partitions/pid-ready/apply", map[string]string{"stateToken": "token-ready"}, http.StatusBadRequest)
-	require.Equal(t, "nodeId is required", bad["detail"])
+	require.Contains(t, bad["detail"], "nodeId")
 	bad = postTieringRaw(t, srv, "/api/v1/tiering/tables/db/tbl/partitions/pid-ready/apply?nodeId=node-a", "{", http.StatusBadRequest)
-	require.Equal(t, "request body must be JSON with stateToken", bad["detail"])
+	require.Contains(t, bad["detail"], "decode")
 	bad = postTieringJSON(t, srv, "/api/v1/tiering/tables/db/tbl/partitions/pid-ready/apply?nodeId=node-a", map[string]string{}, http.StatusBadRequest)
-	require.Equal(t, "stateToken is required", bad["detail"])
+	require.Contains(t, bad["detail"], "stateToken")
 
 	controller.err = errors.New("stale token")
 	conflict := postTieringJSON(t, srv, "/api/v1/tiering/tables/db/tbl/partitions/pid-ready/apply?nodeId=node-a", map[string]string{"stateToken": "token-ready"}, http.StatusConflict)

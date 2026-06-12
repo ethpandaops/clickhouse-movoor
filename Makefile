@@ -52,6 +52,7 @@ fmt:
 ## test: run tests with race detector
 test:
 	go test -race -shuffle=on -coverprofile=coverage.out -covermode=atomic ./...
+	@grep -v "/api/rest/" coverage.out > coverage.out.tmp && mv coverage.out.tmp coverage.out
 
 ## test-integration: run ClickHouse-backed integration tests
 test-integration:

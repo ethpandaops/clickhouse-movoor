@@ -1020,9 +1020,9 @@ components:
         - type: "null"
       description: Nullable RFC3339 timestamp.
     NullableString:
-      type:
-        - string
-        - "null"
+      anyOf:
+        - type: string
+        - type: "null"
       description: Nullable string.
 
     Health:
@@ -1134,7 +1134,7 @@ components:
       type: string
       description: Tiering execution mode.
       enum:
-        - off
+        - "off"
         - plan
         - enforce
     TieringPartitionStatus:
@@ -1618,9 +1618,9 @@ components:
         primaryKey:
           type: string
         versionColumn:
-          type:
-            - string
-            - "null"
+          anyOf:
+            - type: string
+            - type: "null"
     TableListItem:
       allOf:
         - $ref: "#/components/schemas/TableBase"
@@ -1709,13 +1709,13 @@ components:
             bytesOnDisk:
               $ref: "#/components/schemas/UInt64String"
             minPartition:
-              type:
-                - string
-                - "null"
+              anyOf:
+                - type: string
+                - type: "null"
             maxPartition:
-              type:
-                - string
-                - "null"
+              anyOf:
+                - type: string
+                - type: "null"
             lastModificationTime:
               $ref: "#/components/schemas/NullableDateTime"
             partitionPlacements:
@@ -2284,6 +2284,7 @@ components:
               type: string
               description: Opaque id stable for this mutation attempt.
             kind:
+              type: string
               const: mutation
             database:
               type: string
@@ -2392,6 +2393,7 @@ components:
               type: string
               description: Opaque id stable for this queue item attempt.
             kind:
+              type: string
               const: replication_queue
             database:
               type: string

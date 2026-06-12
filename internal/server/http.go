@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ogen-go/ogen/ogenerrors"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
+	"github.com/ethpandaops/clickhouse-movoor/api/rest"
 	"github.com/ethpandaops/clickhouse-movoor/internal/tiering"
 )
 
@@ -41,16 +43,17 @@ type Server interface {
 }
 
 type server struct {
-	log          *slog.Logger
-	cfg          Config
-	webFS        fs.FS
-	state        StateReader
-	tiering      TieringController
-	tieringStore *tiering.Store
-	http         *http.Server
-	addr         string
-	serve        func(*http.Server, net.Listener) error
-	shutdown     func(context.Context) error
+	log           *slog.Logger
+	cfg           Config
+	webFS         fs.FS
+	state         StateReader
+	tiering       TieringController
+	tieringStore  *tiering.Store
+	http          *http.Server
+	addr          string
+	serve         func(*http.Server, net.Listener) error
+	shutdown      func(context.Context) error
+	newRESTServer func(rest.Handler, ...rest.ServerOption) (*rest.Server, error)
 }
 
 // compile-time check that *server satisfies Server.
@@ -92,9 +95,16 @@ func (s *server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", s.cfg.ListenAddress, err)
 	}
 
+	routes, err := s.routes()
+	if err != nil {
+		_ = ln.Close()
+
+		return err
+	}
+
 	s.addr = ln.Addr().String()
 	s.http = &http.Server{
-		Handler:           otelhttp.NewHandler(s.routes(), "movoor.http"),
+		Handler:           otelhttp.NewHandler(routes, "movoor.http"),
 		ReadHeaderTimeout: readHeaderTimeout,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 	}
@@ -138,41 +148,59 @@ func (s *server) Addr() string {
 	return s.addr
 }
 
-// routes builds the HTTP handler tree.
-func (s *server) routes() http.Handler {
+// routes builds the HTTP handler tree: the ogen-generated API server mounted
+// under /api/v1 plus the embedded SPA for everything else.
+func (s *server) routes() (http.Handler, error) {
+	handler := &apiHandler{
+		log:          s.log,
+		state:        s.state,
+		tiering:      s.tiering,
+		tieringStore: s.tieringStore,
+	}
+	newRESTServer := s.newRESTServer
+	if newRESTServer == nil {
+		newRESTServer = rest.NewServer
+	}
+	restServer, err := newRESTServer(handler,
+		rest.WithPathPrefix("/api/v1"),
+		rest.WithNotFound(s.handleAPINotFound),
+		rest.WithErrorHandler(s.handleAPIError),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create api server: %w", err)
+	}
+
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/healthz", s.handleHealth)
-	mux.HandleFunc("GET /api/v1/nodes", s.handleNodes)
-	mux.HandleFunc("GET /api/v1/storage/disks", s.handleStorageDisks)
-	mux.HandleFunc("GET /api/v1/tables", s.handleTables)
-	mux.HandleFunc("GET /api/v1/tables/{database}/{table}", s.handleTable)
-	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/columns", s.handleTableColumns)
-	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/partitions", s.handleTablePartitions)
-	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/parts", s.handleTableParts)
-	mux.HandleFunc("GET /api/v1/tables/{database}/{table}/detached-parts", s.handleDetachedParts)
-	mux.HandleFunc("GET /api/v1/operations", s.handleOperations)
-	mux.HandleFunc("GET /api/v1/operations/mutations", s.handleMutations)
-	mux.HandleFunc("GET /api/v1/operations/replication-queue", s.handleReplicationQueue)
-	mux.HandleFunc("GET /api/v1/part-events", s.handlePartEvents)
-	mux.HandleFunc("GET /api/v1/conditions", s.handleConditions)
-	mux.HandleFunc("GET /api/v1/tiering/plan", s.handleTieringPlan)
-	mux.HandleFunc("GET /api/v1/tiering/status", s.handleTieringStatus)
-	mux.HandleFunc("GET /api/v1/tiering/history", s.handleTieringHistory)
-	mux.HandleFunc("POST /api/v1/tiering/pause", s.handleTieringPause)
-	mux.HandleFunc("POST /api/v1/tiering/resume", s.handleTieringResume)
-	mux.HandleFunc("POST /api/v1/tiering/tables/{database}/{table}/partitions/{partitionId}/apply", s.handleTieringApply)
-	mux.HandleFunc("POST /api/v1/tiering/tables/{database}/{table}/partitions/{partitionId}/retry", s.handleTieringRetry)
-	mux.HandleFunc("/api/", s.handleAPINotFound)
+	mux.Handle("/api/", restServer)
 	mux.Handle("/", s.spaHandler())
 
-	return mux
+	return mux, nil
 }
 
-// handleHealth reports basic liveness as JSON.
-func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+// handleAPINotFound keeps unmatched API paths on the problem+json contract.
+func (s *server) handleAPINotFound(w http.ResponseWriter, r *http.Request) {
+	s.writeProblemJSON(w, r, http.StatusNotFound, "API route is not implemented")
+}
 
-	if err := json.NewEncoder(w).Encode(map[string]string{"status": "ok"}); err != nil {
-		s.log.ErrorContext(r.Context(), "encode health response", slog.Any("error", err))
+// handleAPIError renders ogen decode/validation failures (bad parameters,
+// malformed bodies) as problem+json with the status ogen classified.
+func (s *server) handleAPIError(ctx context.Context, w http.ResponseWriter, r *http.Request, err error) {
+	status := ogenerrors.ErrorCode(err)
+	s.writeProblemJSON(w, r, status, err.Error())
+	s.log.DebugContext(ctx, "api request rejected", slog.Int("status", status), slog.Any("error", err))
+}
+
+func (s *server) writeProblemJSON(w http.ResponseWriter, r *http.Request, status int, detail string) {
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(status)
+	encodeErr := json.NewEncoder(w).Encode(map[string]any{
+		"type":     "about:blank",
+		"title":    http.StatusText(status),
+		"status":   status,
+		"detail":   detail,
+		"instance": r.URL.RequestURI(),
+	})
+	if encodeErr != nil {
+		s.log.DebugContext(r.Context(), "encode problem response", slog.Any("error", encodeErr))
 	}
 }

@@ -4,19 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/ethpandaops/clickhouse-movoor/api/rest"
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
 	"github.com/ethpandaops/clickhouse-movoor/internal/clusterstate"
 	"github.com/ethpandaops/clickhouse-movoor/internal/tiering"
@@ -29,51 +28,40 @@ func TestInternalOperationOmitsUnknownNumbers(t *testing.T) {
 	// a move carries no progress and a mutation/replication-queue operation
 	// carries neither, so nil must serialize as an absent key — a null breaks
 	// the generated client's response validation.
-	body, err := json.Marshal(apiOperation(clusterstate.Operation{
+	op := apiOperation(clusterstate.Operation{
 		OperationID: "move|node-a|part-a",
 		Kind:        "move",
 		State:       "running",
-	}))
+	})
+	body, err := json.Marshal(&op)
 	require.NoError(t, err)
 	require.NotContains(t, string(body), "elapsedSeconds")
 	require.NotContains(t, string(body), "progress")
 
 	elapsed := 1.5
 	progress := 0.25
-	body, err = json.Marshal(apiOperation(clusterstate.Operation{
+	op = apiOperation(clusterstate.Operation{
 		OperationID:    "merge|node-a|part-a",
 		Kind:           "merge",
 		State:          "running",
 		ElapsedSeconds: &elapsed,
 		Progress:       &progress,
-	}))
+	})
+	body, err = json.Marshal(&op)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"elapsedSeconds":1.5`)
 	require.Contains(t, string(body), `"progress":0.25`)
 }
 
-func TestInternalResponseEncodingErrors(t *testing.T) {
-	t.Parallel()
-
-	s := &server{log: slog.New(slog.DiscardHandler)}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/test", nil)
-
-	s.writeJSON(httptest.NewRecorder(), req, map[string]any{"bad": func() {}})
-	s.handleHealth(errorResponseWriter{}, req)
-	s.writeProblem(errorResponseWriter{}, req, problemDetails{
-		Type:   "about:blank",
-		Title:  "Bad",
-		Status: http.StatusBadRequest,
-		Detail: "bad",
-	})
-}
-
 func TestInternalAPINodeEndpointRedactsUserinfo(t *testing.T) {
 	t.Parallel()
 
-	require.Equal(t, "clickhouse://localhost:9000", apiNodeEndpoint("localhost:9000"))
-	require.Equal(t, "clickhouse://localhost:9000", apiNodeEndpoint("default:secret@localhost:9000"))
-	require.Equal(t, "clickhouse://[::1]:9000", apiNodeEndpoint("default:secret@[::1]:9000"))
+	endpoint := apiNodeEndpoint("localhost:9000")
+	require.Equal(t, "clickhouse://localhost:9000", endpoint.String())
+	endpoint = apiNodeEndpoint("default:secret@localhost:9000")
+	require.Equal(t, "clickhouse://localhost:9000", endpoint.String())
+	endpoint = apiNodeEndpoint("default:secret@[::1]:9000")
+	require.Equal(t, "clickhouse://[::1]:9000", endpoint.String())
 }
 
 func TestInternalServerLifecycleHooks(t *testing.T) {
@@ -103,7 +91,7 @@ func TestInternalServerLifecycleHooks(t *testing.T) {
 	require.ErrorContains(t, s.Stop(t.Context()), "shutdown http server: shutdown failed")
 }
 
-func TestInternalFilterHelpers(t *testing.T) {
+func TestInternalPartitionMatches(t *testing.T) {
 	t.Parallel()
 
 	partition := partitionAggregate{
@@ -118,54 +106,37 @@ func TestInternalFilterHelpers(t *testing.T) {
 			},
 		},
 	}
-	require.True(t, partitionMatches(map[string][]string{}, partition))
-	require.True(t, partitionMatches(map[string][]string{
-		"partitionId": {"pid"},
-		"placement":   {"unknown"},
-		"disk":        {"default"},
-		"operation":   {"moving"},
-		"nodeId":      {"node-a"},
-		"shard":       {"shard1"},
-		"replica":     {"replica1"},
-	}, partition))
-	require.False(t, partitionMatches(map[string][]string{"partitionId": {"other"}}, partition))
-	require.False(t, partitionMatches(map[string][]string{"placement": {"split"}}, partition))
-	require.False(t, partitionMatches(map[string][]string{"disk": {"s3"}}, partition))
-	require.False(t, partitionMatches(map[string][]string{"operation": {"merging"}}, partition))
-	require.False(t, partitionMatches(map[string][]string{"nodeId": {"node-b"}}, partition))
-	require.False(t, partitionMatches(map[string][]string{"shard": {"shard2"}}, partition))
-	require.False(t, partitionMatches(map[string][]string{"replica": {"replica2"}}, partition))
+	params := func(mutate func(*rest.ListTablePartitionsParams)) rest.ListTablePartitionsParams {
+		out := rest.ListTablePartitionsParams{Database: "db", Table: "tbl"}
+		if mutate != nil {
+			mutate(&out)
+		}
 
-	nodeID := "node-a"
-	database := "db"
-	table := "tbl"
-	partitionID := "pid"
-	condition := clusterstate.Condition{
-		Severity:    "warning",
-		Code:        "split_partition",
-		NodeID:      &nodeID,
-		Database:    &database,
-		Table:       &table,
-		PartitionID: &partitionID,
+		return out
 	}
-	require.True(t, conditionMatches(map[string][]string{
-		"severity":    {"warning"},
-		"code":        {"split_partition"},
-		"nodeId":      {"node-a"},
-		"database":    {"db"},
-		"table":       {"tbl"},
-		"partitionId": {"pid"},
-	}, condition))
-	require.False(t, conditionMatches(map[string][]string{"severity": {"critical"}}, condition))
-	require.False(t, conditionMatches(map[string][]string{"code": {"other"}}, condition))
-	require.False(t, conditionMatches(map[string][]string{"nodeId": {"node-b"}}, condition))
-	require.False(t, conditionMatches(map[string][]string{"database": {"other"}}, condition))
-	require.False(t, conditionMatches(map[string][]string{"table": {"other"}}, condition))
-	require.False(t, conditionMatches(map[string][]string{"partitionId": {"other"}}, condition))
+
+	require.True(t, partitionMatches(params(nil), partition))
+	require.True(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) {
+		p.PartitionId = rest.NewOptString("pid")
+		p.Placement = rest.NewOptPlacement(rest.PlacementUnknown)
+		p.Disk = rest.NewOptString("default")
+		p.Operation = rest.NewOptString("moving")
+		p.NodeId = rest.NewOptString("node-a")
+		p.Shard = rest.NewOptString("shard1")
+		p.Replica = rest.NewOptString("replica1")
+	}), partition))
+	require.False(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) { p.PartitionId = rest.NewOptString("other") }), partition))
+	require.False(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) { p.Placement = rest.NewOptPlacement(rest.PlacementSplit) }), partition))
+	require.False(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) { p.Disk = rest.NewOptString("s3") }), partition))
+	require.False(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) { p.Operation = rest.NewOptString("merging") }), partition))
+	require.False(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) { p.NodeId = rest.NewOptString("node-b") }), partition))
+	require.False(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) { p.Shard = rest.NewOptString("shard2") }), partition))
+	require.False(t, partitionMatches(params(func(p *rest.ListTablePartitionsParams) { p.Replica = rest.NewOptString("replica2") }), partition))
 
 	node := chclient.Node{ID: "node-a", Shard: "shard1", Replica: "replica1"}
-	require.False(t, nodeMatches(map[string][]string{"shard": {"shard2"}}, node))
-	require.False(t, nodeMatches(map[string][]string{"replica": {"replica2"}}, node))
+	require.False(t, matchNode(rest.OptString{}, rest.NewOptString("shard2"), rest.OptString{}, node))
+	require.False(t, matchNode(rest.OptString{}, rest.OptString{}, rest.NewOptString("replica2"), node))
+	require.True(t, matchNode(rest.NewOptString("node-a"), rest.OptString{}, rest.OptString{}, node))
 }
 
 func TestInternalSmallHelpers(t *testing.T) {
@@ -174,10 +145,6 @@ func TestInternalSmallHelpers(t *testing.T) {
 	value := "x"
 	require.Empty(t, deref(nil))
 	require.Equal(t, "x", deref(&value))
-
-	number := int64(-7)
-	require.Nil(t, nullableInt64String(nil))
-	require.Equal(t, "-7", *nullableInt64String(&number))
 
 	left := "a"
 	right := "b"
@@ -197,20 +164,28 @@ func TestInternalSmallHelpers(t *testing.T) {
 	require.True(t, timeGreater(&late, &early))
 	require.False(t, timeGreater(&early, &late))
 
-	warnings := apiWarnings([]clusterstate.Warning{{Kind: "query", Code: "failed", Message: "bad", NodeID: "node-a"}})
-	require.Equal(t, []warningResponse{{Kind: "query", Code: "failed", Message: "bad", NodeID: "node-a"}}, warnings)
+	number := int64(-7)
+	require.Equal(t, rest.NewOptInt64String("-7"), optI64Ptr(&number))
+	require.False(t, optI64Ptr(nil).Set)
 }
 
-func TestInternalTieringEntryErrorFallbacks(t *testing.T) {
+func TestInternalTieringActionProblem(t *testing.T) {
 	t.Parallel()
 
-	err := tieringEntryError(tiering.HistoryEntry{Outcome: "skipped"})
-	require.ErrorIs(t, err, tiering.ErrActionFailed)
-	require.EqualError(t, err, `tiering action failed: outcome "skipped"`)
+	require.Nil(t, tieringActionProblem(tiering.HistoryEntry{Outcome: "started"}, nil))
+	require.Nil(t, tieringActionProblem(tiering.HistoryEntry{Outcome: "success"}, nil))
 
-	err = tieringEntryError(tiering.HistoryEntry{})
-	require.ErrorIs(t, err, tiering.ErrActionFailed)
-	require.EqualError(t, err, "tiering action failed")
+	out := tieringActionProblem(tiering.HistoryEntry{Outcome: "skipped"}, nil)
+	require.NotNil(t, out)
+	require.Equal(t, int32(http.StatusConflict), out.Status)
+
+	out = tieringActionProblem(tiering.HistoryEntry{}, tiering.ErrPartitionNotFound)
+	require.NotNil(t, out)
+	require.Equal(t, int32(http.StatusNotFound), out.Status)
+
+	out = tieringActionProblem(tiering.HistoryEntry{}, errors.New("stale token"))
+	require.NotNil(t, out)
+	require.Equal(t, int32(http.StatusConflict), out.Status)
 }
 
 func TestInternalAggregateHelperBranches(t *testing.T) {
@@ -245,29 +220,27 @@ func TestInternalAggregateHelperBranches(t *testing.T) {
 	require.Equal(t, "new", partitions[0].partitionID)
 }
 
-func TestInternalWriteJSONDowngradesClientDisconnects(t *testing.T) {
+func TestInternalAPIErrorHandlerWritesProblem(t *testing.T) {
 	t.Parallel()
 
 	capture := &captureLogHandler{}
 	s := &server{log: slog.New(capture)}
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/test", nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/test?broken=zzz", nil)
 
-	// Broken pipe: the client closed the socket mid-response.
-	s.writeJSON(pipeErrorResponseWriter{}, req, map[string]any{"ok": true})
+	recorder := httptest.NewRecorder()
+	s.handleAPIError(t.Context(), recorder, req, errors.New("decode failed"))
+	require.Equal(t, "application/problem+json", recorder.Header().Get("Content-Type"))
 
-	// Cancelled request context: the client vanished before the write.
-	cancelled, cancel := context.WithCancel(t.Context())
-	cancel()
-	s.writeJSON(errorResponseWriter{}, req.WithContext(cancelled), map[string]any{"ok": true})
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &body))
+	require.Equal(t, "decode failed", body["detail"])
 
-	require.Len(t, capture.records, 2)
+	// Client write failures (closed tabs, page refreshes) must never log at
+	// error level — the encode layer is owned by ogen and failures there are
+	// the client's business.
 	for _, record := range capture.records {
 		require.Less(t, record.Level, slog.LevelError, record.Message)
 	}
-
-	// A genuine encode failure on a live connection stays an error.
-	s.writeJSON(errorResponseWriter{}, req, map[string]any{"ok": true})
-	require.Equal(t, slog.LevelError, capture.records[len(capture.records)-1].Level)
 }
 
 type captureLogHandler struct {
@@ -287,21 +260,3 @@ func (h *captureLogHandler) Handle(_ context.Context, record slog.Record) error 
 func (h *captureLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
 
 func (h *captureLogHandler) WithGroup(string) slog.Handler { return h }
-
-type pipeErrorResponseWriter struct{ errorResponseWriter }
-
-func (pipeErrorResponseWriter) Write([]byte) (int, error) {
-	return 0, fmt.Errorf("write tcp [::1]:8080->[::1]:57588: %w", syscall.EPIPE)
-}
-
-type errorResponseWriter struct{}
-
-func (errorResponseWriter) Header() http.Header {
-	return http.Header{}
-}
-
-func (errorResponseWriter) Write([]byte) (int, error) {
-	return 0, errors.New("write failed")
-}
-
-func (errorResponseWriter) WriteHeader(int) {}

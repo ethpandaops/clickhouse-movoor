@@ -27,8 +27,11 @@ New subsystems get their own package under `internal/` and are started from
   Linting is governed by `.golangci.yml`.
 - Web: see `web/CLAUDE.md`. Colors must use the semantic tokens in
   `web/src/index.css` (enforced by custom ESLint rules).
-- The OpenAPI spec in `api/openapi.yaml` is the source of truth for the typed
-  web API client (`pnpm --dir web generate:api`).
+- The OpenAPI spec in `api/openapi.yaml` is the source of truth for both the
+  ogen-generated Go server (`api/rest`, regenerated via `go generate ./api`)
+  and the typed web API client (`pnpm --dir web generate:api`). `make generate`
+  runs both. Handlers implement the generated `rest.Handler` interface in
+  `internal/server/handler.go`; never edit `api/rest` by hand.
 
 ## Commands
 
