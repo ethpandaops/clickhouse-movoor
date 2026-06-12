@@ -7,6 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
 )
 
@@ -160,13 +164,26 @@ func (c *controller) Start(ctx context.Context) error {
 // timeout together. The observation's query timeout starts after the slot is
 // acquired, so queueing never eats into a tick's query budget.
 func (c *controller) observeTable(ctx context.Context, client chclient.Client, watch EffectiveWatch) (TableObservation, error) {
+	ctx, span := tracer().Start(ctx, "tiering.observe", trace.WithAttributes(
+		attribute.String("node", client.Node.ID),
+		attribute.String("table", watch.Database+"."+watch.Table),
+	))
+	defer span.End()
+	queuedAt := time.Now()
 	release, ok := c.acquireObserveSlot(ctx, client.Node.ID)
 	if !ok {
+		span.SetStatus(codes.Error, "canceled while waiting for an observe slot")
 		return TableObservation{}, ctx.Err()
 	}
 	defer release()
+	span.SetAttributes(attribute.Int64("tiering.slot_wait_ms", time.Since(queuedAt).Milliseconds()))
 
-	return c.observer.ObserveTable(ctx, client, watch)
+	obs, err := c.observer.ObserveTable(ctx, client, watch)
+	if err != nil && !isContextCanceled(ctx, err) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return obs, err
 }
 
 func (c *controller) acquireObserveSlot(ctx context.Context, nodeID string) (func(), bool) {

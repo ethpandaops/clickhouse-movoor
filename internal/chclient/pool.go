@@ -1,7 +1,9 @@
 package chclient
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"math"
@@ -9,6 +11,10 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/XSAM/otelsql"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.37.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -134,7 +140,51 @@ func openNode(node NodeConfig, dialTimeout time.Duration, queryTimeout time.Dura
 		opts.MaxIdleConns = defaultMaxIdleConns
 	}
 
-	return clickhouse.OpenDB(opts), opts.Addr[0], nil
+	db := otelsql.OpenDB(clickhouse.Connector(opts),
+		otelsql.WithAttributes(
+			semconv.DBSystemNameKey.String("clickhouse"),
+			semconv.ServerAddress(opts.Addr[0]),
+			attribute.String("movoor.node", node.Name),
+		),
+		otelsql.WithSpanNameFormatter(querySpanName),
+		otelsql.WithSpanOptions(otelsql.SpanOptions{
+			DisableErrSkip:       true,
+			OmitConnResetSession: true,
+			OmitConnPrepare:      true,
+			OmitRows:             true,
+			OmitConnectorConnect: true,
+			SpanFilter:           childSpansOnly,
+		}),
+	)
+	db.SetMaxIdleConns(opts.MaxIdleConns)
+	db.SetMaxOpenConns(opts.MaxOpenConns)
+	lifetime := opts.ConnMaxLifetime
+	if lifetime <= 0 {
+		// clickhouse.OpenDB defaults the lifetime to an hour via setDefaults;
+		// the Connector path leaves applying it to the caller.
+		lifetime = time.Hour
+	}
+	db.SetConnMaxLifetime(lifetime)
+
+	return db, opts.Addr[0], nil
+}
+
+// querySpanName names statement spans by their leading SQL verb (SELECT,
+// ALTER, OPTIMIZE, ...) so traces group by what the query does; spans for
+// non-statement driver calls keep the otelsql method name.
+func querySpanName(_ context.Context, method otelsql.Method, query string) string {
+	fields := strings.Fields(query)
+	if len(fields) == 0 {
+		return string(method)
+	}
+	return "clickhouse." + strings.ToLower(fields[0])
+}
+
+// childSpansOnly suppresses statement spans for calls without a parent span:
+// connection pings and unparented background loops would otherwise each
+// become their own root trace.
+func childSpansOnly(ctx context.Context, _ otelsql.Method, _ string, _ []driver.NamedValue) bool {
+	return trace.SpanContextFromContext(ctx).IsValid()
 }
 
 func applyQueryTimeout(opts *clickhouse.Options, queryTimeout time.Duration) {

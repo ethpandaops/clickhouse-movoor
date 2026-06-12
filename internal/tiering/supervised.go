@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ensureNotPaused rejects supervised writes while dispatch is paused — the
@@ -83,8 +85,10 @@ func (c *controller) Apply(ctx context.Context, nodeID string, database string, 
 		// the leg's whole window, so re-applies fail with ErrLegInFlight and
 		// autonomous dispatch cannot double-run the partition. Validation above
 		// stays on the request context on purpose — a disconnect before this
-		// point aborts cleanly with nothing started.
-		legCtx := c.legContext()
+		// point aborts cleanly with nothing started. Only cancellation detaches:
+		// the request's span context carries over so the leg's spans land in the
+		// operator's API request trace.
+		legCtx := trace.ContextWithSpanContext(c.legContext(), trace.SpanContextFromContext(ctx))
 		c.wg.Go(func() {
 			result := c.executor.Apply(legCtx, client, tableObs, verdict)
 			c.unmarkSupervised(verdict)

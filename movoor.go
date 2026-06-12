@@ -73,6 +73,10 @@ func New(log *slog.Logger, cfg Config) (*App, error) {
 		InstanceID:       instanceID,
 		TracingEndpoint:  cfg.Tracing.Endpoint,
 		TraceSampleRatio: *cfg.Tracing.SampleRatio,
+		// Actions are rare and precious: a tier/optimize leg must keep its
+		// trace even when the reconcile tick that dispatched it lost the
+		// sampling dice roll.
+		AlwaysSampleSpans: []string{"tiering.action"},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create ops server: %w", err)

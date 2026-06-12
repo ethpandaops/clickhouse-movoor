@@ -34,6 +34,11 @@ type Config struct {
 	// resolves before this layer). Direct constructors note: the zero value
 	// therefore traces nothing — pass 1 for the historical default.
 	TraceSampleRatio float64
+	// AlwaysSampleSpans force-samples spans with these names even when the
+	// surrounding trace lost the ratio dice roll — for rare, high-value root
+	// operations that must never be sampled away. An explicit ratio of zero
+	// still disables tracing entirely.
+	AlwaysSampleSpans []string
 }
 
 type ClickHouseReadiness string
