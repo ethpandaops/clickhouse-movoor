@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
 )
@@ -166,7 +166,7 @@ func (c *controller) kickReconcile(nodeID string, database string, table string)
 
 func (c *controller) reconcileOnce(ctx context.Context, client chclient.Client, watch EffectiveWatch) bool {
 	start := time.Now()
-	ctx, span := otel.Tracer("github.com/ethpandaops/clickhouse-movoor/internal/tiering").Start(ctx, "tiering.reconcile")
+	ctx, span := tracer().Start(ctx, "tiering.reconcile")
 	span.SetAttributes(
 		attribute.String("node", client.Node.ID),
 		attribute.String("table", watch.Database+"."+watch.Table),
@@ -272,9 +272,16 @@ func (c *controller) clearRepeatedFailure(key string) {
 // dispatch, the read probe, side-merge counting, and reconcile metrics — those
 // belong to the periodic reconcile tick, not a manual action.
 func (c *controller) republishTable(ctx context.Context, client chclient.Client, watch EffectiveWatch) {
+	ctx, span := tracer().Start(ctx, "tiering.republish", trace.WithAttributes(
+		attribute.String("node", client.Node.ID),
+		attribute.String("table", watch.Database+"."+watch.Table),
+	))
+	defer span.End()
 	start := time.Now()
 	obs, err := c.observeTable(ctx, client, watch)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		c.store.PublishError(client.Node.ID, watch.Database, watch.Table, "", err, time.Since(start))
 		return
 	}

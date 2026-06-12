@@ -1,11 +1,14 @@
 package chclient
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/XSAM/otelsql"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestNewPoolCreatesOneClientPerNode(t *testing.T) {
@@ -217,4 +220,60 @@ func TestRedactDSN(t *testing.T) {
 			require.Equal(t, tt.want, RedactDSN(tt.raw))
 		})
 	}
+}
+
+func TestQuerySpanName(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method otelsql.Method
+		query  string
+		want   string
+	}{
+		{
+			name:   "select query names by verb",
+			method: otelsql.MethodConnQuery,
+			query:  "SELECT 1 FROM system.parts",
+			want:   "clickhouse.select",
+		},
+		{
+			name:   "alter statement names by verb",
+			method: otelsql.MethodConnExec,
+			query:  "ALTER TABLE db.t MOVE PARTITION ID 'p'",
+			want:   "clickhouse.alter",
+		},
+		{
+			name:   "leading whitespace is ignored",
+			method: otelsql.MethodConnExec,
+			query:  "  optimize TABLE db.t",
+			want:   "clickhouse.optimize",
+		},
+		{
+			name:   "empty query falls back to the driver method",
+			method: otelsql.MethodConnPing,
+			query:  "",
+			want:   "sql.conn.ping",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tt.want, querySpanName(context.Background(), tt.method, tt.query))
+		})
+	}
+}
+
+func TestChildSpansOnly(t *testing.T) {
+	t.Parallel()
+
+	require.False(t, childSpansOnly(context.Background(), otelsql.MethodConnQuery, "SELECT 1", nil),
+		"calls without a parent span must not create root spans")
+
+	parent := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{0x01},
+		SpanID:  trace.SpanID{0x01},
+	})
+	ctx := trace.ContextWithSpanContext(context.Background(), parent)
+	require.True(t, childSpansOnly(ctx, otelsql.MethodConnQuery, "SELECT 1", nil))
 }

@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
 )
@@ -46,7 +46,7 @@ func NewExecutor(log *slog.Logger, store *Store, observer Observer, instanceID s
 
 func (e *Executor) Apply(ctx context.Context, client chclient.Client, table TableObservation, verdict Verdict) HistoryEntry {
 	start := time.Now()
-	ctx, span := otel.Tracer("github.com/ethpandaops/clickhouse-movoor/internal/tiering").Start(ctx, "tiering.action")
+	ctx, span := tracer().Start(ctx, "tiering.action")
 	span.SetAttributes(
 		attribute.String("node", verdict.NodeID),
 		attribute.String("table", verdict.Database+"."+verdict.Table),
@@ -184,40 +184,59 @@ func (e *Executor) moveToHot(ctx context.Context, client chclient.Client, table 
 
 func (e *Executor) moveLoop(ctx context.Context, client chclient.Client, table TableObservation, verdict Verdict, attemptID string, targetClause string, onTarget func(string) bool) error {
 	for attempt := range 3 {
-		if err := e.checkTableIdentity(ctx, client, table); err != nil {
-			return err
-		}
-		if err := e.guardFreshInserts(ctx, client, table, verdict.PartitionID); err != nil {
-			return err
-		}
-		baseline, baselineErr := e.captureMoveBaseline(ctx, client, table, verdict.PartitionID)
-		if baselineErr != nil {
-			return baselineErr
-		}
-		if mutationErr := e.checkMutationsClear(ctx, client, table); mutationErr != nil {
-			return mutationErr
-		}
-		//nolint:gosec // ClickHouse cannot bind identifiers or partition IDs; all dynamic fragments are quoted.
-		query := "ALTER TABLE " + QuoteQualified(verdict.Database, verdict.Table) +
-			" MOVE PARTITION ID " + QuoteString(verdict.PartitionID) +
-			" " + targetClause +
-			" SETTINGS alter_move_to_space_execute_async = 1"
-		if _, moveErr := client.DB.ExecContext(e.statementContext(ctx, attemptID, fmt.Sprintf("move-%d", attempt+1), nil), query); moveErr != nil && !isAlreadyMoved(moveErr) {
-			return classifyClickHouseError("move", moveErr)
-		}
-		waitErr := e.waitForVerifiedDisk(ctx, client, table, verdict.PartitionID, onTarget, baseline, table.Settings.OptimizeStallAfter.Duration)
-		if waitErr == nil {
+		attemptErr := e.moveAttempt(ctx, client, table, verdict, attemptID, targetClause, onTarget, attempt)
+		if attemptErr == nil {
 			return nil
 		}
-		if errors.Is(waitErr, errVerifyNotOnTarget) || errors.Is(waitErr, errVerifyBaselineDrift) {
+		if errors.Is(attemptErr, errVerifyNotOnTarget) || errors.Is(attemptErr, errVerifyBaselineDrift) {
 			if e.Instrumenter != nil {
 				e.Instrumenter.RecordRetry(ctx, verdict.NodeID, verdict.Database, verdict.Table, verdict.Decision)
 			}
 			continue
 		}
-		return waitErr
+		return attemptErr
 	}
 	return errors.New("move did not converge after retries")
+}
+
+// moveAttempt runs one statement-plus-convergence cycle of a move leg under
+// its own span. A nil return means the leg converged; errVerifyNotOnTarget
+// and errVerifyBaselineDrift are retryable, everything else aborts the leg.
+func (e *Executor) moveAttempt(ctx context.Context, client chclient.Client, table TableObservation, verdict Verdict, attemptID string, targetClause string, onTarget func(string) bool, attempt int) (err error) {
+	ctx, span := tracer().Start(ctx, "tiering.action.move_attempt",
+		trace.WithAttributes(attribute.Int("tiering.attempt", attempt+1)))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+	if err = e.checkTableIdentity(ctx, client, table); err != nil {
+		return err
+	}
+	if err = e.guardFreshInserts(ctx, client, table, verdict.PartitionID); err != nil {
+		return err
+	}
+	baseline, baselineErr := e.captureMoveBaseline(ctx, client, table, verdict.PartitionID)
+	if baselineErr != nil {
+		err = baselineErr
+		return err
+	}
+	if err = e.checkMutationsClear(ctx, client, table); err != nil {
+		return err
+	}
+	//nolint:gosec // ClickHouse cannot bind identifiers or partition IDs; all dynamic fragments are quoted.
+	query := "ALTER TABLE " + QuoteQualified(verdict.Database, verdict.Table) +
+		" MOVE PARTITION ID " + QuoteString(verdict.PartitionID) +
+		" " + targetClause +
+		" SETTINGS alter_move_to_space_execute_async = 1"
+	if _, moveErr := client.DB.ExecContext(e.statementContext(ctx, attemptID, fmt.Sprintf("move-%d", attempt+1), nil), query); moveErr != nil && !isAlreadyMoved(moveErr) {
+		err = classifyClickHouseError("move", moveErr)
+		return err
+	}
+	err = e.waitForVerifiedDisk(ctx, client, table, verdict.PartitionID, onTarget, baseline, table.Settings.OptimizeStallAfter.Duration)
+	return err
 }
 
 func (e *Executor) captureMoveBaseline(ctx context.Context, client chclient.Client, table TableObservation, partitionID string) ([]PartHash, error) {
@@ -308,54 +327,86 @@ var (
 	errVerifyUnsealed      = errors.New("partition received fresh inserts during the attempt")
 )
 
-func (e *Executor) waitForPartCount(ctx context.Context, client chclient.Client, table TableObservation, partitionID string, target uint64, timeout time.Duration) error {
+func (e *Executor) waitForPartCount(ctx context.Context, client chclient.Client, table TableObservation, partitionID string, target uint64, timeout time.Duration) (err error) {
+	ctx, span := tracer().Start(ctx, "tiering.action.converge",
+		trace.WithAttributes(attribute.String("tiering.converge", "part_count")))
+	polls := 0
+	defer func() {
+		span.SetAttributes(attribute.Int("tiering.polls", polls))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+	pollCtx := withoutQuerySpans(ctx)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(e.pollInterval())
 	defer ticker.Stop()
 	for {
-		partition, err := e.Observer.RefreshPartition(ctx, client, table, partitionID)
-		if err == nil && partition.ActiveParts <= target {
+		polls++
+		partition, refreshErr := e.Observer.RefreshPartition(pollCtx, client, table, partitionID)
+		if refreshErr == nil && partition.ActiveParts <= target {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			err = ctx.Err()
+			return err
 		case <-deadline.C:
-			return errors.New("optimize stalled before reaching target part count")
+			err = errors.New("optimize stalled before reaching target part count")
+			return err
 		case <-ticker.C:
 		}
 	}
 }
 
-func (e *Executor) waitForVerifiedDisk(ctx context.Context, client chclient.Client, table TableObservation, partitionID string, onTarget func(string) bool, baseline []PartHash, timeout time.Duration) error {
+func (e *Executor) waitForVerifiedDisk(ctx context.Context, client chclient.Client, table TableObservation, partitionID string, onTarget func(string) bool, baseline []PartHash, timeout time.Duration) (err error) {
+	ctx, span := tracer().Start(ctx, "tiering.action.converge",
+		trace.WithAttributes(attribute.String("tiering.converge", "verified_disk")))
+	polls := 0
+	defer func() {
+		span.SetAttributes(attribute.Int("tiering.polls", polls))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+	pollCtx := withoutQuerySpans(ctx)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(e.pollInterval())
 	defer ticker.Stop()
 	var lastErr error
 	for {
-		partition, err := e.Observer.RefreshPartition(ctx, client, table, partitionID)
+		polls++
+		partition, refreshErr := e.Observer.RefreshPartition(pollCtx, client, table, partitionID)
 		switch {
-		case err == nil:
+		case refreshErr == nil:
 			verifyErr := verifyPartHashes(baseline, partition.Hashes, onTarget)
 			if verifyErr == nil {
 				return nil
 			}
 			if errors.Is(verifyErr, errVerifyBaselineDrift) || errors.Is(verifyErr, errVerifyHashMismatch) {
-				return verifyErr
+				err = verifyErr
+				return err
 			}
 			lastErr = verifyErr
-		case errors.Is(err, sql.ErrNoRows):
+		case errors.Is(refreshErr, sql.ErrNoRows):
 			lastErr = errVerifyNoParts
 		default:
+			err = refreshErr
 			return err
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			err = ctx.Err()
+			return err
 		case <-deadline.C:
-			return lastErr
+			err = lastErr
+			return err
 		case <-ticker.C:
 		}
 	}
