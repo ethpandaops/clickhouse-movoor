@@ -35,6 +35,7 @@ const meta = {
     onApplyTiering: fn(),
     onRetryTiering: fn(),
     awaitingToken: undefined,
+    inFlight: false,
     tieringPaused: false,
     flash: false,
   },

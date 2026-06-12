@@ -42,6 +42,7 @@ const meta = {
     expandedNodes: new Set<string>(),
     expandedPartitions: new Set<string>(),
     awaitingRefresh: new Map<string, string>(),
+    inFlightKeys: new Set<string>(),
     applyErrors: new Map<string, string>(),
     tieringPaused: false,
     flashKey: null,

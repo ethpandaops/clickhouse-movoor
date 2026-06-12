@@ -224,6 +224,11 @@ func (a *App) validateWatches(ctx context.Context) error {
 		return nil
 	}
 
+	a.log.InfoContext(ctx, "validating watches",
+		slog.Int("clickhouse_nodes", len(a.cfg.ClickHouse.Nodes)),
+		slog.Int("watches", len(a.cfg.Watches)),
+	)
+
 	result, err := a.state.ValidateWatchesDetailed(ctx)
 	for _, warning := range result.Warnings {
 		a.log.WarnContext(ctx, "watch validation warning",
@@ -259,6 +264,12 @@ func (a *App) validateWatches(ctx context.Context) error {
 
 		return fmt.Errorf("validate watches: %w", err)
 	}
+
+	a.log.InfoContext(ctx, "watch validation passed",
+		slog.Int("nodes_responded", result.NodesResponded),
+		slog.Int("nodes_expected", result.NodesExpected),
+		slog.Duration("duration", result.CollectionDuration),
+	)
 
 	return nil
 }

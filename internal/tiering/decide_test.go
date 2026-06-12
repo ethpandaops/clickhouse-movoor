@@ -59,6 +59,29 @@ func TestDecideHotLegSelection(t *testing.T) {
 	require.Equal(t, DecisionTier, DecidePartition(obs, hot, now).Decision)
 }
 
+func TestDecideHoldsMergeInFlight(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	obs := frontierObservation(now)
+	hot := obs.Partitions[2] // "hot-old": age-eligible, sealed, all on default
+
+	require.Equal(t, DecisionTier, DecidePartition(obs, hot, now).Decision)
+
+	hot.MergeInFlight = true
+	verdict := DecidePartition(obs, hot, now)
+	require.Equal(t, DecisionHold, verdict.Decision)
+	require.Contains(t, verdict.Reason, "merge is currently running")
+	require.NotNil(t, verdict.Hold)
+	require.Equal(t, "merge-in-flight", verdict.Hold.Gate)
+
+	// The gate guards split repairs and cold-side merges too — sealed() is the
+	// shared admission path.
+	split := obs.Partitions[1] // "split"
+	split.MergeInFlight = true
+	verdict = DecidePartition(obs, split, now)
+	require.Equal(t, DecisionHold, verdict.Decision)
+	require.Equal(t, "merge-in-flight", verdict.Hold.Gate)
+}
+
 func TestDecideOptimizeOnColdMatrix(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	obs := frontierObservation(now)

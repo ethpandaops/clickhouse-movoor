@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: build build-web generate lint lint-openapi fmt test test-integration clean tidy vuln modernize-check audit check-release run test/cover help
+.PHONY: build build-web build-go generate lint lint-openapi fmt test test-integration clean tidy vuln modernize-check audit check-release run test/cover help
 
 BUILD_DIR := ./cmd/clickhouse-movoor
 BINARY := clickhouse-movoor
@@ -20,9 +20,18 @@ build-web:
 build: build-web
 	go build -tags=webui -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
 
-## generate: run go generate
+## build-go: compile the binary without embedded frontend assets (API only)
+build-go:
+	go build -trimpath -ldflags="$(LDFLAGS)" -o $(BINARY) $(BUILD_DIR)
+
+## generate: run go generate and regenerate the typed web client from api/openapi.yaml
 generate:
 	go generate ./...
+	@if ! command -v pnpm >/dev/null 2>&1; then \
+		echo "pnpm not found; install pnpm to regenerate the web API client" >&2; \
+		exit 1; \
+	fi
+	cd web && pnpm generate:api
 
 ## lint: run golangci-lint
 lint:
@@ -70,8 +79,8 @@ audit: lint test vuln modernize-check
 	go mod tidy -diff
 	go mod verify
 
-## run: build and run the binary
-run: build
+## run: build Go only (no frontend; pair with the Vite dev server) and run with config.yaml
+run: build-go
 	./$(BINARY) --config config.yaml
 
 ## test/cover: open HTML coverage report

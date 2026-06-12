@@ -3,12 +3,14 @@ package server
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ethpandaops/clickhouse-movoor/internal/chclient"
@@ -121,6 +123,13 @@ func (s *server) writeJSONStatus(w http.ResponseWriter, r *http.Request, status 
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(body); err != nil {
+		// A vanished client — closed tab, page refresh, proxy timeout — is the
+		// client's business, not a server fault worth an error-level log.
+		if r.Context().Err() != nil || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+			s.log.DebugContext(r.Context(), "client went away during api response", "error", err)
+
+			return
+		}
 		s.log.ErrorContext(r.Context(), "encode api response", "error", err)
 	}
 }

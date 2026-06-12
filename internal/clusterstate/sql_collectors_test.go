@@ -1,7 +1,6 @@
 package clusterstate
 
 import (
-	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"math"
@@ -62,14 +61,14 @@ func TestCollectWatchValidationItemsSQL(t *testing.T) {
 	watches := []Watch{
 		sqlTestWatch,
 		{Database: "db", Table: "missing"},
+		{Database: "db2", Table: "tbl"},
 	}
 	collector, client, mock := mockCollectorClient(t, watches...)
 	mock.ExpectQuery(queryContaining("FROM system.tables")).
-		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("ReplicatedMergeTree"))
-	mock.ExpectQuery(queryContaining("FROM system.tables")).
-		WithArgs("db", "missing").
-		WillReturnError(sql.ErrNoRows)
+		WithArgs("db", "tbl", "db", "missing", "db2", "tbl").
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "ReplicatedMergeTree").
+			AddRow("db2", "tbl", "MergeTree"))
 
 	items, err := collector.collectWatchValidationItems(t.Context(), client)
 
@@ -77,7 +76,76 @@ func TestCollectWatchValidationItemsSQL(t *testing.T) {
 	require.Equal(t, []WatchValidationItem{
 		{Node: client.Node, Watch: watches[0], Engine: "ReplicatedMergeTree", Found: true},
 		{Node: client.Node, Watch: watches[1]},
+		{Node: client.Node, Watch: watches[2], Engine: "MergeTree", Found: true},
 	}, items)
+}
+
+func TestCollectWatchValidationItemsErrorsSQL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		rows *sqlmock.Rows
+	}{
+		{
+			name: "scan",
+			rows: sqlmock.NewRows([]string{"database", "name", "engine"}).
+				AddRow(nil, "tbl", "MergeTree"),
+		},
+		{
+			name: "rows",
+			rows: sqlmock.NewRows([]string{"database", "name", "engine"}).
+				AddRow("db", "tbl", "MergeTree").
+				RowError(0, errors.New("rows failed")),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			collector, client, mock := mockCollectorClient(t)
+			mock.ExpectQuery(queryContaining("FROM system.tables")).
+				WithArgs("db", "tbl").
+				WillReturnRows(tt.rows)
+
+			items, err := collector.collectWatchValidationItems(t.Context(), client)
+
+			require.Error(t, err)
+			require.Nil(t, items)
+		})
+	}
+}
+
+func TestWatchScopedCollectorsWithoutWatchesSQL(t *testing.T) {
+	t.Parallel()
+
+	collector := New(nil, 0, nil)
+	client := chclient.Client{Node: chclient.Node{ID: "node-a"}}
+
+	used, err := collector.collectWatchedPartBytesByDisk(t.Context(), client)
+	require.NoError(t, err)
+	require.Empty(t, used)
+
+	tables, err := collector.collectTableStates(t.Context(), client)
+	require.NoError(t, err)
+	require.Nil(t, tables)
+
+	mutations, err := collector.collectMutations(t.Context(), client)
+	require.NoError(t, err)
+	require.Nil(t, mutations)
+
+	queue, err := collector.collectReplicationQueue(t.Context(), client)
+	require.NoError(t, err)
+	require.Nil(t, queue)
+
+	events, warning, err := collector.collectPartEvents(t.Context(), client, time.Time{}, nil)
+	require.NoError(t, err)
+	require.Nil(t, warning)
+	require.Nil(t, events)
+
+	items, err := collector.collectWatchValidationItems(t.Context(), client)
+	require.NoError(t, err)
+	require.Nil(t, items)
 }
 
 func TestCollectWatchedPartBytesByDiskSQL(t *testing.T) {
@@ -89,14 +157,10 @@ func TestCollectWatchedPartBytesByDiskSQL(t *testing.T) {
 	}
 	collector, client, mock := mockCollectorClient(t, watches...)
 	mock.ExpectQuery(queryContaining("sum(bytes_on_disk)")).
-		WithArgs("db", "tbl").
+		WithArgs("db", "tbl", "db", "tbl2").
 		WillReturnRows(sqlmock.NewRows([]string{"disk_name", "sum"}).
-			AddRow("default", int64(10)).
+			AddRow("default", int64(17)).
 			AddRow("s3_cache", int64(5)))
-	mock.ExpectQuery(queryContaining("sum(bytes_on_disk)")).
-		WithArgs("db", "tbl2").
-		WillReturnRows(sqlmock.NewRows([]string{"disk_name", "sum"}).
-			AddRow("default", int64(7)))
 
 	used, err := collector.collectWatchedPartBytesByDisk(t.Context(), client)
 
@@ -297,7 +361,7 @@ func TestPublicCollectorSuccessBranchesSQL(t *testing.T) {
 	require.Len(t, columns.Items, 1)
 }
 
-func TestCollectTableStateSQL(t *testing.T) {
+func TestCollectTableStatesSQL(t *testing.T) {
 	t.Parallel()
 
 	collector, client, mock := mockCollectorClient(t)
@@ -305,6 +369,8 @@ func TestCollectTableStateSQL(t *testing.T) {
 	mock.ExpectQuery(queryContaining("FROM system.tables")).
 		WithArgs("db", "tbl").
 		WillReturnRows(sqlmock.NewRows([]string{
+			"database",
+			"name",
 			"uuid",
 			"engine",
 			"storage_policy",
@@ -313,10 +379,12 @@ func TestCollectTableStateSQL(t *testing.T) {
 			"primary_key",
 			"sampling_key",
 			"is_replicated",
-		}).AddRow("uuid-1", "ReplicatedMergeTree", "tiered", "toYYYYMM(ts)", "ts", "ts", "", int64(1)))
+		}).AddRow("db", "tbl", "uuid-1", "ReplicatedMergeTree", "tiered", "toYYYYMM(ts)", "ts", "ts", "", int64(1)))
 	mock.ExpectQuery(queryContaining("countDistinct(partition_id)")).
 		WithArgs("db", "tbl").
 		WillReturnRows(sqlmock.NewRows([]string{
+			"database",
+			"table",
 			"active_partitions",
 			"active_parts",
 			"rows",
@@ -324,22 +392,25 @@ func TestCollectTableStateSQL(t *testing.T) {
 			"min_partition",
 			"max_partition",
 			"last_modification_time",
-		}).AddRow(int64(2), int64(5), int64(100), int64(4096), "202601", "202602", modified))
+		}).AddRow("db", "tbl", int64(2), int64(5), int64(100), int64(4096), "202601", "202602", modified))
 	mock.ExpectQuery(queryContaining("FROM system.replicas")).
 		WithArgs("db", "tbl").
 		WillReturnRows(sqlmock.NewRows([]string{
+			"database",
+			"table",
 			"is_readonly",
 			"is_session_expired",
 			"queue_size",
 			"absolute_delay",
 			"total_replicas",
 			"active_replicas",
-		}).AddRow(int64(1), int64(0), int64(3), int64(9), int64(2), int64(1)))
+		}).AddRow("db", "tbl", int64(1), int64(0), int64(3), int64(9), int64(2), int64(1)))
 
-	table, ok, err := collector.collectTableState(t.Context(), client, sqlTestWatch)
+	tables, err := collector.collectTableStates(t.Context(), client)
 
 	require.NoError(t, err)
-	require.True(t, ok)
+	require.Len(t, tables, 1)
+	table := tables[0]
 	require.Equal(t, client.Node, table.Node)
 	require.Equal(t, "uuid-1", table.UUID)
 	require.Equal(t, "ReplicatedMergeTree", table.Engine)
@@ -360,13 +431,15 @@ func TestCollectTableStateSQL(t *testing.T) {
 	require.Equal(t, uint64(1), table.Replica.ActiveReplicas)
 }
 
-func TestCollectTableStateMissingSQL(t *testing.T) {
+func TestCollectTableStatesMissingSQL(t *testing.T) {
 	t.Parallel()
 
 	collector, client, mock := mockCollectorClient(t)
 	mock.ExpectQuery(queryContaining("FROM system.tables")).
 		WithArgs("db", "tbl").
 		WillReturnRows(sqlmock.NewRows([]string{
+			"database",
+			"name",
 			"uuid",
 			"engine",
 			"storage_policy",
@@ -377,14 +450,13 @@ func TestCollectTableStateMissingSQL(t *testing.T) {
 			"is_replicated",
 		}))
 
-	table, ok, err := collector.collectTableState(t.Context(), client, sqlTestWatch)
+	tables, err := collector.collectTableStates(t.Context(), client)
 
 	require.NoError(t, err)
-	require.False(t, ok)
-	require.Empty(t, table)
+	require.Empty(t, tables)
 }
 
-func TestCollectTableStateErrorsSQL(t *testing.T) {
+func TestCollectTableStatesErrorsSQL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -424,6 +496,52 @@ func TestCollectTableStateErrorsSQL(t *testing.T) {
 					WillReturnError(errors.New("replica query failed"))
 			},
 		},
+		{
+			name: "tables scan",
+			mock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(queryContaining("FROM system.tables")).
+					WithArgs("db", "tbl").
+					WillReturnRows(tableDefinitionRows().
+						AddRow("db", "tbl", "uuid-1", "ReplicatedMergeTree", "tiered",
+							"toYYYYMM(ts)", "ts", "ts", "", nil))
+			},
+		},
+		{
+			name: "parts summary scan",
+			mock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(queryContaining("FROM system.tables")).
+					WithArgs("db", "tbl").
+					WillReturnRows(tableDefinitionRows())
+				mock.ExpectQuery(queryContaining("countDistinct(partition_id)")).
+					WithArgs("db", "tbl").
+					WillReturnRows(tableSummaryRows().
+						AddRow("db", "tbl", nil, int64(5), int64(100), int64(4096),
+							"202601", "202602", time.Time{}))
+			},
+		},
+		{
+			name: "replica state scan",
+			mock: func(mock sqlmock.Sqlmock) {
+				mock.ExpectQuery(queryContaining("FROM system.tables")).
+					WithArgs("db", "tbl").
+					WillReturnRows(tableDefinitionRows())
+				mock.ExpectQuery(queryContaining("countDistinct(partition_id)")).
+					WithArgs("db", "tbl").
+					WillReturnRows(tableSummaryRows())
+				mock.ExpectQuery(queryContaining("FROM system.replicas")).
+					WithArgs("db", "tbl").
+					WillReturnRows(sqlmock.NewRows([]string{
+						"database",
+						"table",
+						"is_readonly",
+						"is_session_expired",
+						"queue_size",
+						"absolute_delay",
+						"total_replicas",
+						"active_replicas",
+					}).AddRow("db", "tbl", nil, int64(0), int64(3), int64(9), int64(2), int64(1)))
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -432,22 +550,23 @@ func TestCollectTableStateErrorsSQL(t *testing.T) {
 			collector, client, mock := mockCollectorClient(t)
 			tt.mock(mock)
 
-			table, ok, err := collector.collectTableState(t.Context(), client, sqlTestWatch)
+			tables, err := collector.collectTableStates(t.Context(), client)
 
 			require.Error(t, err)
-			require.False(t, ok)
-			require.Empty(t, table)
+			require.Empty(t, tables)
 		})
 	}
 }
 
-func TestCollectReplicaStateNoRowsSQL(t *testing.T) {
+func TestCollectReplicaStatesNoRowsSQL(t *testing.T) {
 	t.Parallel()
 
 	collector, client, mock := mockCollectorClient(t)
 	mock.ExpectQuery(queryContaining("FROM system.replicas")).
 		WithArgs("db", "tbl").
 		WillReturnRows(sqlmock.NewRows([]string{
+			"database",
+			"table",
 			"is_readonly",
 			"is_session_expired",
 			"queue_size",
@@ -456,13 +575,14 @@ func TestCollectReplicaStateNoRowsSQL(t *testing.T) {
 			"active_replicas",
 		}))
 
-	replica, err := collector.collectReplicaState(t.Context(), client, sqlTestWatch)
+	states := map[Watch]*TableState{sqlTestWatch: {}}
+	err := collector.collectReplicaStates(t.Context(), client, states)
 
 	require.NoError(t, err)
-	require.Nil(t, replica)
+	require.Nil(t, states[sqlTestWatch].Replica)
 }
 
-func TestCollectReplicaStateQueryErrorSQL(t *testing.T) {
+func TestCollectReplicaStatesQueryErrorSQL(t *testing.T) {
 	t.Parallel()
 
 	collector, client, mock := mockCollectorClient(t)
@@ -470,10 +590,61 @@ func TestCollectReplicaStateQueryErrorSQL(t *testing.T) {
 		WithArgs("db", "tbl").
 		WillReturnError(errors.New("replica query failed"))
 
-	replica, err := collector.collectReplicaState(t.Context(), client, sqlTestWatch)
+	states := map[Watch]*TableState{sqlTestWatch: {}}
+	err := collector.collectReplicaStates(t.Context(), client, states)
 
-	require.Nil(t, replica)
 	require.Error(t, err)
+	require.Nil(t, states[sqlTestWatch].Replica)
+}
+
+func TestCollectTablePartAggregatesSkipsUnwatchedRowsSQL(t *testing.T) {
+	t.Parallel()
+
+	collector, client, mock := mockCollectorClient(t)
+	mock.ExpectQuery(queryContaining("countDistinct(partition_id)")).
+		WithArgs("db", "tbl").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"database",
+			"table",
+			"active_partitions",
+			"active_parts",
+			"rows",
+			"bytes_on_disk",
+			"min_partition",
+			"max_partition",
+			"last_modification_time",
+		}).AddRow("db", "other", int64(2), int64(5), int64(100), int64(4096),
+			"202601", "202602", time.Time{}))
+
+	states := map[Watch]*TableState{sqlTestWatch: {}}
+	err := collector.collectTablePartAggregates(t.Context(), client, states)
+
+	require.NoError(t, err)
+	require.Zero(t, states[sqlTestWatch].ActiveParts)
+}
+
+func TestCollectReplicaStatesSkipsUnwatchedRowsSQL(t *testing.T) {
+	t.Parallel()
+
+	collector, client, mock := mockCollectorClient(t)
+	mock.ExpectQuery(queryContaining("FROM system.replicas")).
+		WithArgs("db", "tbl").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"database",
+			"table",
+			"is_readonly",
+			"is_session_expired",
+			"queue_size",
+			"absolute_delay",
+			"total_replicas",
+			"active_replicas",
+		}).AddRow("db", "other", int64(1), int64(0), int64(3), int64(9), int64(2), int64(1)))
+
+	states := map[Watch]*TableState{sqlTestWatch: {}}
+	err := collector.collectReplicaStates(t.Context(), client, states)
+
+	require.NoError(t, err)
+	require.Nil(t, states[sqlTestWatch].Replica)
 }
 
 func TestCollectTableColumnsSQL(t *testing.T) {
@@ -814,7 +985,7 @@ func TestCollectMutationsSQL(t *testing.T) {
 			"bad mutation",
 		))
 
-	mutations, err := collector.collectMutations(t.Context(), client, sqlTestWatch)
+	mutations, err := collector.collectMutations(t.Context(), client)
 
 	require.NoError(t, err)
 	require.Len(t, mutations, 1)
@@ -875,7 +1046,7 @@ func TestCollectMutationsErrorsSQL(t *testing.T) {
 			collector, client, mock := mockCollectorClient(t)
 			tt.mock(mock)
 
-			mutations, err := collector.collectMutations(t.Context(), client, sqlTestWatch)
+			mutations, err := collector.collectMutations(t.Context(), client)
 
 			require.Nil(t, mutations)
 			require.Error(t, err)
@@ -933,7 +1104,7 @@ func TestCollectReplicationQueueSQL(t *testing.T) {
 			"fetch failed",
 		))
 
-	items, err := collector.collectReplicationQueue(t.Context(), client, sqlTestWatch)
+	items, err := collector.collectReplicationQueue(t.Context(), client)
 
 	require.NoError(t, err)
 	require.Len(t, items, 1)
@@ -999,7 +1170,7 @@ func TestCollectReplicationQueueErrorsSQL(t *testing.T) {
 			collector, client, mock := mockCollectorClient(t)
 			tt.mock(mock)
 
-			items, err := collector.collectReplicationQueue(t.Context(), client, sqlTestWatch)
+			items, err := collector.collectReplicationQueue(t.Context(), client)
 
 			require.Nil(t, items)
 			require.Error(t, err)
@@ -1056,7 +1227,7 @@ func TestCollectPartEventsSQL(t *testing.T) {
 			"",
 		))
 
-	events, warning, err := collector.collectPartEvents(t.Context(), client, sqlTestWatch, from, &to)
+	events, warning, err := collector.collectPartEvents(t.Context(), client, from, &to)
 
 	require.NoError(t, err)
 	require.Nil(t, warning)
@@ -1082,7 +1253,7 @@ func TestCollectPartEventsUnavailableWarningSQL(t *testing.T) {
 		WithArgs("db", "tbl", from, from).
 		WillReturnError(&clickhouse.Exception{Code: chErrCodeUnknownTable, Message: "system.part_log does not exist"})
 
-	events, warning, err := collector.collectPartEvents(t.Context(), client, sqlTestWatch, from, nil)
+	events, warning, err := collector.collectPartEvents(t.Context(), client, from, nil)
 
 	require.NoError(t, err)
 	require.Nil(t, events)
@@ -1134,7 +1305,7 @@ func TestCollectPartEventsErrorsSQL(t *testing.T) {
 			collector, client, mock := mockCollectorClient(t)
 			tt.mock(mock)
 
-			events, warning, err := collector.collectPartEvents(t.Context(), client, sqlTestWatch, from, nil)
+			events, warning, err := collector.collectPartEvents(t.Context(), client, from, nil)
 
 			require.Nil(t, events)
 			require.Nil(t, warning)
@@ -1749,7 +1920,8 @@ func TestValidateWatchesSQL(t *testing.T) {
 	collector, _, mock := mockPooledCollectorClient(t)
 	mock.ExpectQuery(queryContaining("FROM system.tables")).
 		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("MergeTree"))
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "MergeTree"))
 
 	warnings, err := collector.ValidateWatches(t.Context())
 
@@ -1768,7 +1940,8 @@ func TestValidateWatchesDetailedPartialSQL(t *testing.T) {
 
 	mockA.ExpectQuery(queryContaining("FROM system.tables")).
 		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("MergeTree"))
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "MergeTree"))
 	mockB.ExpectQuery(queryContaining("FROM system.tables")).
 		WithArgs("db", "tbl").
 		WillReturnError(errors.New("connection refused"))
@@ -1803,7 +1976,7 @@ func TestValidateWatchesErrorsSQL(t *testing.T) {
 			expect: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(queryContaining("FROM system.tables")).
 					WithArgs("db", "tbl").
-					WillReturnError(sql.ErrNoRows)
+					WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}))
 			},
 			wantErr: "db.tbl: missing on responding node node-a",
 		},
@@ -1812,7 +1985,8 @@ func TestValidateWatchesErrorsSQL(t *testing.T) {
 			expect: func(mock sqlmock.Sqlmock) {
 				mock.ExpectQuery(queryContaining("FROM system.tables")).
 					WithArgs("db", "tbl").
-					WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("Distributed"))
+					WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+						AddRow("db", "tbl", "Distributed"))
 			},
 			wantErr: `db.tbl: engine "Distributed" on node node-a is not a physical MergeTree-family table`,
 		},
@@ -1937,6 +2111,8 @@ func diskColumns() []string {
 
 func tableDefinitionRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{
+		"database",
+		"name",
 		"uuid",
 		"engine",
 		"storage_policy",
@@ -1945,13 +2121,15 @@ func tableDefinitionRows() *sqlmock.Rows {
 		"primary_key",
 		"sampling_key",
 		"is_replicated",
-	}).AddRow("uuid-1", "ReplicatedMergeTree", "tiered", "toYYYYMM(ts)", "ts", "ts", "", int64(1))
+	}).AddRow("db", "tbl", "uuid-1", "ReplicatedMergeTree", "tiered", "toYYYYMM(ts)", "ts", "ts", "", int64(1))
 }
 
 func tableSummaryRows() *sqlmock.Rows {
 	modified := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 
 	return sqlmock.NewRows([]string{
+		"database",
+		"table",
 		"active_partitions",
 		"active_parts",
 		"rows",
@@ -1959,7 +2137,7 @@ func tableSummaryRows() *sqlmock.Rows {
 		"min_partition",
 		"max_partition",
 		"last_modification_time",
-	}).AddRow(int64(2), int64(5), int64(100), int64(4096), "202601", "202602", modified)
+	}).AddRow("db", "tbl", int64(2), int64(5), int64(100), int64(4096), "202601", "202602", modified)
 }
 
 func columnColumns() []string {

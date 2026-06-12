@@ -2,7 +2,9 @@ package clusterstate
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +93,21 @@ func New(pool *chclient.Pool, queryTimeout time.Duration, watches []Watch) *Coll
 		queryTimeout: queryTimeout,
 		watches:      watchesCopy,
 	}
+}
+
+// watchPredicate returns a SQL fragment matching every configured watch plus
+// its bind args, e.g. "(database, table) IN ((?, ?), (?, ?))". tableColumn
+// names the table column: system.tables calls it name, the rest table.
+// Callers must guard against an empty watch list.
+func (c *Collector) watchPredicate(tableColumn string) (string, []any) {
+	pairs := make([]string, 0, len(c.watches))
+	args := make([]any, 0, len(c.watches)*2)
+	for _, watch := range c.watches {
+		pairs = append(pairs, "(?, ?)")
+		args = append(args, watch.Database, watch.Table)
+	}
+
+	return fmt.Sprintf("(database, %s) IN (%s)", tableColumn, strings.Join(pairs, ", ")), args
 }
 
 // Watches returns the configured table watches.
@@ -284,35 +301,36 @@ func (c *Collector) collectDisks(ctx context.Context, client chclient.Client) ([
 
 func (c *Collector) collectWatchedPartBytesByDisk(ctx context.Context, client chclient.Client) (map[string]uint64, error) {
 	usedByDisk := make(map[string]uint64)
-	for _, watch := range c.watches {
-		rows, err := client.DB.QueryContext(ctx, `
-			SELECT
-				disk_name,
-				sum(bytes_on_disk)
-			FROM system.parts
-			WHERE database = ? AND table = ? AND active
-			GROUP BY disk_name
-		`, watch.Database, watch.Table)
-		if err != nil {
-			return nil, err
-		}
+	if len(c.watches) == 0 {
+		return usedByDisk, nil
+	}
 
-		for rows.Next() {
-			var (
-				disk string
-				used uint64
-			)
-			if scanErr := rows.Scan(&disk, &used); scanErr != nil {
-				_ = rows.Close()
+	predicate, args := c.watchPredicate("table")
+	rows, err := client.DB.QueryContext(ctx, fmt.Sprintf(`
+		SELECT
+			disk_name,
+			sum(bytes_on_disk)
+		FROM system.parts
+		WHERE %s AND active
+		GROUP BY disk_name
+	`, predicate), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 
-				return nil, scanErr
-			}
-			usedByDisk[disk] += used
+	for rows.Next() {
+		var (
+			disk string
+			used uint64
+		)
+		if scanErr := rows.Scan(&disk, &used); scanErr != nil {
+			return nil, scanErr
 		}
-		_ = rows.Close()
-		if rowsErr := rows.Err(); rowsErr != nil {
-			return nil, rowsErr
-		}
+		usedByDisk[disk] += used
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
 	}
 
 	return usedByDisk, nil

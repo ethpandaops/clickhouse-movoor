@@ -260,15 +260,9 @@ type Condition struct {
 // CollectTables reads the configured watched tables from every node.
 func (c *Collector) CollectTables(ctx context.Context) Result[TableState] {
 	return collectPerNode(ctx, c, len(c.watches), func(ctx context.Context, client chclient.Client) ([]TableState, *Warning) {
-		items := make([]TableState, 0, len(c.watches))
-		for _, watch := range c.watches {
-			item, ok, err := c.collectTableState(ctx, client, watch)
-			if err != nil {
-				return nil, queryWarning(client.Node.ID, "system_tables_query_failed", err)
-			}
-			if ok {
-				items = append(items, item)
-			}
+		items, err := c.collectTableStates(ctx, client)
+		if err != nil {
+			return nil, queryWarning(client.Node.ID, "system_tables_query_failed", err)
 		}
 
 		return items, nil
@@ -329,13 +323,9 @@ func (c *Collector) CollectDetachedParts(ctx context.Context, watch Watch) Resul
 // CollectMutations reads system.mutations for configured watches from every node.
 func (c *Collector) CollectMutations(ctx context.Context) Result[Mutation] {
 	return collectPerNode(ctx, c, len(c.watches), func(ctx context.Context, client chclient.Client) ([]Mutation, *Warning) {
-		items := make([]Mutation, 0)
-		for _, watch := range c.watches {
-			watchItems, err := c.collectMutations(ctx, client, watch)
-			if err != nil {
-				return nil, queryWarning(client.Node.ID, "system_mutations_query_failed", err)
-			}
-			items = append(items, watchItems...)
+		items, err := c.collectMutations(ctx, client)
+		if err != nil {
+			return nil, queryWarning(client.Node.ID, "system_mutations_query_failed", err)
 		}
 
 		return items, nil
@@ -345,13 +335,9 @@ func (c *Collector) CollectMutations(ctx context.Context) Result[Mutation] {
 // CollectReplicationQueue reads system.replication_queue for configured watches from every node.
 func (c *Collector) CollectReplicationQueue(ctx context.Context) Result[ReplicationQueueItem] {
 	return collectPerNode(ctx, c, len(c.watches), func(ctx context.Context, client chclient.Client) ([]ReplicationQueueItem, *Warning) {
-		items := make([]ReplicationQueueItem, 0)
-		for _, watch := range c.watches {
-			watchItems, err := c.collectReplicationQueue(ctx, client, watch)
-			if err != nil {
-				return nil, queryWarning(client.Node.ID, "system_replication_queue_query_failed", err)
-			}
-			items = append(items, watchItems...)
+		items, err := c.collectReplicationQueue(ctx, client)
+		if err != nil {
+			return nil, queryWarning(client.Node.ID, "system_replication_queue_query_failed", err)
 		}
 
 		return items, nil
@@ -368,17 +354,12 @@ func (c *Collector) CollectPartEvents(ctx context.Context, from *time.Time, to *
 	}
 
 	return collectPerNode(ctx, c, 64, func(ctx context.Context, client chclient.Client) ([]PartEvent, *Warning) {
-		items := make([]PartEvent, 0)
-		for _, watch := range c.watches {
-			watchItems, warning, err := c.collectPartEvents(ctx, client, watch, lower, to)
-			if warning != nil || err != nil {
-				if warning != nil {
-					return nil, warning
-				}
-
-				return nil, queryWarning(client.Node.ID, "system_part_log_query_failed", err)
-			}
-			items = append(items, watchItems...)
+		items, warning, err := c.collectPartEvents(ctx, client, lower, to)
+		if warning != nil {
+			return nil, warning
+		}
+		if err != nil {
+			return nil, queryWarning(client.Node.ID, "system_part_log_query_failed", err)
 		}
 
 		return items, nil
@@ -386,8 +367,6 @@ func (c *Collector) CollectPartEvents(ctx context.Context, from *time.Time, to *
 }
 
 // CollectOperations reads in-flight moves, merges, mutations, and replication queue work.
-//
-//nolint:gocognit // This keeps the operation sources visible in one collection pass.
 func (c *Collector) CollectOperations(ctx context.Context) Result[Operation] {
 	return collectPerNode(ctx, c, 16, func(ctx context.Context, client chclient.Client) ([]Operation, *Warning) {
 		items := make([]Operation, 0)
@@ -403,25 +382,23 @@ func (c *Collector) CollectOperations(ctx context.Context) Result[Operation] {
 		}
 		items = append(items, merges...)
 
-		for _, watch := range c.watches {
-			mutations, mutationsErr := c.collectMutations(ctx, client, watch)
-			if mutationsErr != nil {
-				return nil, queryWarning(client.Node.ID, "system_mutations_query_failed", mutationsErr)
+		mutations, mutationsErr := c.collectMutations(ctx, client)
+		if mutationsErr != nil {
+			return nil, queryWarning(client.Node.ID, "system_mutations_query_failed", mutationsErr)
+		}
+		for _, mutation := range mutations {
+			if mutation.IsDone {
+				continue
 			}
-			for _, mutation := range mutations {
-				if mutation.IsDone {
-					continue
-				}
-				items = append(items, operationFromMutation(mutation))
-			}
+			items = append(items, operationFromMutation(mutation))
+		}
 
-			queueItems, queueErr := c.collectReplicationQueue(ctx, client, watch)
-			if queueErr != nil {
-				return nil, queryWarning(client.Node.ID, "system_replication_queue_query_failed", queueErr)
-			}
-			for _, queueItem := range queueItems {
-				items = append(items, operationFromReplicationQueue(queueItem))
-			}
+		queueItems, queueErr := c.collectReplicationQueue(ctx, client)
+		if queueErr != nil {
+			return nil, queryWarning(client.Node.ID, "system_replication_queue_query_failed", queueErr)
+		}
+		for _, queueItem := range queueItems {
+			items = append(items, operationFromReplicationQueue(queueItem))
 		}
 
 		return items, nil
@@ -514,13 +491,44 @@ func (c *Collector) CollectConditions(ctx context.Context) Result[Condition] {
 	return result(start, nodesExpected, respondedNodes(nodesExpected, warnings), warnings, conditions)
 }
 
-func (c *Collector) collectTableState(ctx context.Context, client chclient.Client, watch Watch) (TableState, bool, error) {
-	var (
-		item         TableState
-		isReplicated uint8
-	)
-	err := client.DB.QueryRowContext(ctx, `
+// collectTableStates reads table identity, active-part aggregates, and
+// replica state for every watch in three batched queries — one round-trip per
+// watch does not fit inside one queryTimeout once the watch count grows.
+func (c *Collector) collectTableStates(ctx context.Context, client chclient.Client) ([]TableState, error) {
+	if len(c.watches) == 0 {
+		return nil, nil
+	}
+
+	states, err := c.collectTableIdentities(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	if len(states) == 0 {
+		return nil, nil
+	}
+	if aggErr := c.collectTablePartAggregates(ctx, client, states); aggErr != nil {
+		return nil, aggErr
+	}
+	if replicaErr := c.collectReplicaStates(ctx, client, states); replicaErr != nil {
+		return nil, replicaErr
+	}
+
+	items := make([]TableState, 0, len(c.watches))
+	for _, watch := range c.watches {
+		if state, ok := states[watch]; ok {
+			items = append(items, *state)
+		}
+	}
+
+	return items, nil
+}
+
+func (c *Collector) collectTableIdentities(ctx context.Context, client chclient.Client) (map[Watch]*TableState, error) {
+	predicate, args := c.watchPredicate("name")
+	rows, err := client.DB.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
+			database,
+			name,
 			toString(uuid),
 			engine,
 			storage_policy,
@@ -530,37 +538,50 @@ func (c *Collector) collectTableState(ctx context.Context, client chclient.Clien
 			sampling_key,
 			if(startsWith(engine, 'Replicated'), 1, 0)
 		FROM system.tables
-		WHERE database = ? AND name = ?
-	`, watch.Database, watch.Table).Scan(
-		&item.UUID,
-		&item.Engine,
-		&item.StoragePolicy,
-		&item.PartitionKey,
-		&item.SortingKey,
-		&item.PrimaryKey,
-		&item.SamplingKey,
-		&isReplicated,
-	)
+		WHERE %s
+	`, predicate), args...)
 	if err != nil {
-		if errorsIsNoRows(err) {
-			return TableState{}, false, nil
-		}
+		return nil, err
+	}
+	defer rows.Close()
 
-		return TableState{}, false, err
+	states := make(map[Watch]*TableState, len(c.watches))
+	for rows.Next() {
+		var (
+			item         TableState
+			isReplicated uint8
+		)
+		if scanErr := rows.Scan(
+			&item.Database,
+			&item.Table,
+			&item.UUID,
+			&item.Engine,
+			&item.StoragePolicy,
+			&item.PartitionKey,
+			&item.SortingKey,
+			&item.PrimaryKey,
+			&item.SamplingKey,
+			&isReplicated,
+		); scanErr != nil {
+			return nil, scanErr
+		}
+		item.Node = client.Node
+		item.IsReplicated = isReplicated != 0
+		states[Watch{Database: item.Database, Table: item.Table}] = &item
 	}
 
-	item.Node = client.Node
-	item.Database = watch.Database
-	item.Table = watch.Table
-	item.IsReplicated = isReplicated != 0
+	return states, rows.Err()
+}
 
-	var (
-		minPartition sql.NullString
-		maxPartition sql.NullString
-		lastModified sql.NullTime
-	)
-	err = client.DB.QueryRowContext(ctx, `
+// collectTablePartAggregates fills active-part aggregates into states. Tables
+// with no active parts produce no group row and keep their zero values, which
+// matches what the previous per-table aggregate returned for them.
+func (c *Collector) collectTablePartAggregates(ctx context.Context, client chclient.Client, states map[Watch]*TableState) error {
+	predicate, args := c.watchPredicate("table")
+	rows, err := client.DB.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
+			database,
+			table,
 			countDistinct(partition_id),
 			count(),
 			coalesce(sum(rows), 0),
@@ -569,44 +590,60 @@ func (c *Collector) collectTableState(ctx context.Context, client chclient.Clien
 			max(partition),
 			max(modification_time)
 		FROM system.parts
-		WHERE database = ? AND table = ? AND active
-	`, watch.Database, watch.Table).Scan(
-		&item.ActivePartitions,
-		&item.ActiveParts,
-		&item.Rows,
-		&item.BytesOnDisk,
-		&minPartition,
-		&maxPartition,
-		&lastModified,
-	)
+		WHERE %s AND active
+		GROUP BY database, table
+	`, predicate), args...)
 	if err != nil {
-		return TableState{}, false, err
+		return err
 	}
-	item.MinPartition = nullableStringPtr(minPartition)
-	item.MaxPartition = nullableStringPtr(maxPartition)
-	item.LastModificationTime = nullableTimePtr(lastModified)
+	defer rows.Close()
 
-	replica, err := c.collectReplicaState(ctx, client, watch)
-	if err != nil {
-		return TableState{}, false, err
+	for rows.Next() {
+		var (
+			watch            Watch
+			activePartitions int
+			activeParts      uint64
+			tableRows        uint64
+			bytesOnDisk      uint64
+			minPartition     sql.NullString
+			maxPartition     sql.NullString
+			lastModified     sql.NullTime
+		)
+		if scanErr := rows.Scan(
+			&watch.Database,
+			&watch.Table,
+			&activePartitions,
+			&activeParts,
+			&tableRows,
+			&bytesOnDisk,
+			&minPartition,
+			&maxPartition,
+			&lastModified,
+		); scanErr != nil {
+			return scanErr
+		}
+		state, ok := states[watch]
+		if !ok {
+			continue
+		}
+		state.ActivePartitions = activePartitions
+		state.ActiveParts = activeParts
+		state.Rows = tableRows
+		state.BytesOnDisk = bytesOnDisk
+		state.MinPartition = nullableStringPtr(minPartition)
+		state.MaxPartition = nullableStringPtr(maxPartition)
+		state.LastModificationTime = nullableTimePtr(lastModified)
 	}
-	item.Replica = replica
 
-	return item, true, nil
+	return rows.Err()
 }
 
-func (c *Collector) collectReplicaState(ctx context.Context, client chclient.Client, watch Watch) (*ReplicaState, error) {
-	var (
-		replica        ReplicaState
-		readonly       uint8
-		sessionExpired uint8
-		queueSize      uint32
-		absoluteDelay  uint64
-		totalReplicas  uint32
-		activeReplicas uint32
-	)
-	err := client.DB.QueryRowContext(ctx, `
+func (c *Collector) collectReplicaStates(ctx context.Context, client chclient.Client, states map[Watch]*TableState) error {
+	predicate, args := c.watchPredicate("table")
+	rows, err := client.DB.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
+			database,
+			table,
 			is_readonly,
 			is_session_expired,
 			queue_size,
@@ -614,32 +651,50 @@ func (c *Collector) collectReplicaState(ctx context.Context, client chclient.Cli
 			total_replicas,
 			active_replicas
 		FROM system.replicas
-		WHERE database = ? AND table = ?
-		LIMIT 1
-	`, watch.Database, watch.Table).Scan(
-		&readonly,
-		&sessionExpired,
-		&queueSize,
-		&absoluteDelay,
-		&totalReplicas,
-		&activeReplicas,
-	)
+		WHERE %s
+	`, predicate), args...)
 	if err != nil {
-		if errorsIsNoRows(err) {
-			return nil, nil
-		}
+		return err
+	}
+	defer rows.Close()
 
-		return nil, err
+	for rows.Next() {
+		var (
+			watch          Watch
+			replica        ReplicaState
+			readonly       uint8
+			sessionExpired uint8
+			queueSize      uint32
+			absoluteDelay  uint64
+			totalReplicas  uint32
+			activeReplicas uint32
+		)
+		if scanErr := rows.Scan(
+			&watch.Database,
+			&watch.Table,
+			&readonly,
+			&sessionExpired,
+			&queueSize,
+			&absoluteDelay,
+			&totalReplicas,
+			&activeReplicas,
+		); scanErr != nil {
+			return scanErr
+		}
+		state, ok := states[watch]
+		if !ok {
+			continue
+		}
+		replica.Readonly = readonly != 0
+		replica.SessionExpired = sessionExpired != 0
+		replica.QueueSize = uint64(queueSize)
+		replica.AbsoluteDelaySeconds = absoluteDelay
+		replica.TotalReplicas = uint64(totalReplicas)
+		replica.ActiveReplicas = uint64(activeReplicas)
+		state.Replica = &replica
 	}
 
-	replica.Readonly = readonly != 0
-	replica.SessionExpired = sessionExpired != 0
-	replica.QueueSize = uint64(queueSize)
-	replica.AbsoluteDelaySeconds = absoluteDelay
-	replica.TotalReplicas = uint64(totalReplicas)
-	replica.ActiveReplicas = uint64(activeReplicas)
-
-	return &replica, nil
+	return rows.Err()
 }
 
 func (c *Collector) collectTableColumns(ctx context.Context, client chclient.Client, watch Watch) (NodeColumns, error) {
@@ -900,8 +955,13 @@ func (c *Collector) collectDetachedParts(ctx context.Context, client chclient.Cl
 	return items, nil
 }
 
-func (c *Collector) collectMutations(ctx context.Context, client chclient.Client, watch Watch) ([]Mutation, error) {
-	rows, err := client.DB.QueryContext(ctx, `
+func (c *Collector) collectMutations(ctx context.Context, client chclient.Client) ([]Mutation, error) {
+	if len(c.watches) == 0 {
+		return nil, nil
+	}
+
+	predicate, args := c.watchPredicate("table")
+	rows, err := client.DB.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
 			database,
 			table,
@@ -918,9 +978,9 @@ func (c *Collector) collectMutations(ctx context.Context, client chclient.Client
 			latest_fail_time,
 			latest_fail_reason
 		FROM system.mutations
-		WHERE database = ? AND table = ?
-		ORDER BY create_time DESC, mutation_id
-	`, watch.Database, watch.Table)
+		WHERE %s
+		ORDER BY database, table, create_time DESC, mutation_id
+	`, predicate), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -977,8 +1037,13 @@ func (c *Collector) collectMutations(ctx context.Context, client chclient.Client
 	return items, nil
 }
 
-func (c *Collector) collectReplicationQueue(ctx context.Context, client chclient.Client, watch Watch) ([]ReplicationQueueItem, error) {
-	rows, err := client.DB.QueryContext(ctx, `
+func (c *Collector) collectReplicationQueue(ctx context.Context, client chclient.Client) ([]ReplicationQueueItem, error) {
+	if len(c.watches) == 0 {
+		return nil, nil
+	}
+
+	predicate, args := c.watchPredicate("table")
+	rows, err := client.DB.QueryContext(ctx, fmt.Sprintf(`
 		SELECT
 			database,
 			table,
@@ -1000,9 +1065,9 @@ func (c *Collector) collectReplicationQueue(ctx context.Context, client chclient
 			postpone_reason,
 			last_exception
 		FROM system.replication_queue
-		WHERE database = ? AND table = ?
-		ORDER BY position
-	`, watch.Database, watch.Table)
+		WHERE %s
+		ORDER BY database, table, position
+	`, predicate), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1073,16 +1138,18 @@ func (c *Collector) collectReplicationQueue(ctx context.Context, client chclient
 	return items, nil
 }
 
-func (c *Collector) collectPartEvents(
-	ctx context.Context,
-	client chclient.Client,
-	watch Watch,
-	from time.Time,
-	to *time.Time,
-) ([]PartEvent, *Warning, error) {
-	// event_date >= toDate(from) prunes part_log's monthly partitions before
-	// the event_time filter narrows within them.
-	const partEventQuery = `
+// partEventsQuery builds the batched system.part_log query. event_date >=
+// toDate(from) prunes part_log's monthly partitions before the event_time
+// filter narrows within them. LIMIT BY keeps the per-table cap the previous
+// per-watch queries had: a merge-heavy table must not crowd every other watch
+// out of the result.
+func partEventsQuery(predicate string, withUpperBound bool) string {
+	upperBound := ""
+	if withUpperBound {
+		upperBound = "AND event_time <= ?"
+	}
+
+	return fmt.Sprintf(`
 		SELECT
 			database,
 			table,
@@ -1103,23 +1170,34 @@ func (c *Collector) collectPartEvents(
 			error,
 			exception
 		FROM system.part_log
-		WHERE database = ? AND table = ?
+		WHERE %s
 			AND event_date >= toDate(?)
 			AND event_time >= ?
-	`
-	const partEventQueryTail = `
+			%s
 		ORDER BY event_time_microseconds DESC
-		LIMIT 1000
-	`
+		LIMIT 1000 BY database, table
+	`, predicate, upperBound)
+}
 
-	query := partEventQuery + partEventQueryTail
-	args := []any{watch.Database, watch.Table, from, from}
+func (c *Collector) collectPartEvents(
+	ctx context.Context,
+	client chclient.Client,
+	from time.Time,
+	to *time.Time,
+) ([]PartEvent, *Warning, error) {
+	if len(c.watches) == 0 {
+		return nil, nil, nil
+	}
+
+	predicate, predicateArgs := c.watchPredicate("table")
+	args := make([]any, 0, len(predicateArgs)+3)
+	args = append(args, predicateArgs...)
+	args = append(args, from, from)
 	if to != nil {
-		query = partEventQuery + ` AND event_time <= ?` + partEventQueryTail
 		args = append(args, *to)
 	}
 
-	rows, err := client.DB.QueryContext(ctx, query, args...)
+	rows, err := client.DB.QueryContext(ctx, partEventsQuery(predicate, to != nil), args...)
 	if err != nil {
 		if isUnknownTableError(err) {
 			return nil, &Warning{

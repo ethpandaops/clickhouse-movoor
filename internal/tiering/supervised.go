@@ -3,6 +3,7 @@ package tiering
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // ensureNotPaused rejects supervised writes while dispatch is paused — the
@@ -76,30 +77,46 @@ func (c *controller) Apply(ctx context.Context, nodeID string, database string, 
 		if !c.markSupervised(verdict) {
 			return HistoryEntry{}, fmt.Errorf("%w: partition %s", ErrLegInFlight, verdict.PartitionID)
 		}
-		result := c.executor.Apply(ctx, client, tableObs, verdict)
-		c.unmarkSupervised(verdict)
-		if result.Outcome != "success" {
-			c.markStalled(verdict, result)
-			c.republishTable(ctx, client, watch)
-			return result, actionFailedError(result)
-		}
-		c.clearStalled(nodeID, database, table, partitionID)
-		// Republish this node×table immediately so the plan store (and UI)
-		// reflect the supervised action without waiting for the next reconcile
-		// tick — otherwise the applied partition shows its pre-action state for
-		// up to a full interval.
-		c.republishTable(ctx, client, watch)
-		return result, nil
+		// The leg runs detached from the request context: a closed browser tab
+		// or client timeout must not orphan supervision of a merge/move that is
+		// already running inside ClickHouse. The in-flight marker stays set for
+		// the leg's whole window, so re-applies fail with ErrLegInFlight and
+		// autonomous dispatch cannot double-run the partition. Validation above
+		// stays on the request context on purpose — a disconnect before this
+		// point aborts cleanly with nothing started.
+		legCtx := c.legContext()
+		c.wg.Go(func() {
+			result := c.executor.Apply(legCtx, client, tableObs, verdict)
+			c.unmarkSupervised(verdict)
+			if result.Outcome != "success" {
+				c.markStalled(verdict, result)
+			} else {
+				c.clearStalled(nodeID, database, table, partitionID)
+			}
+			// Republish this node×table immediately so the plan store (and UI)
+			// reflect the supervised action without waiting for the next
+			// reconcile tick — otherwise the applied partition shows its
+			// pre-action state for up to a full interval.
+			c.republishTable(legCtx, client, watch)
+		})
+		return startedEntry(verdict), nil
 	}
 	return HistoryEntry{}, fmt.Errorf("%w: %s was not observed", ErrPartitionNotFound, partitionID)
 }
 
-func actionFailedError(entry HistoryEntry) error {
-	if entry.Error != "" {
-		return fmt.Errorf("%w: %s", ErrActionFailed, entry.Error)
+// startedEntry acknowledges an admitted supervised leg. Outcome "started"
+// means the leg was dispatched, not that it converged — completion lands in
+// history, and the leg is visible via InFlight until then.
+func startedEntry(verdict Verdict) HistoryEntry {
+	return HistoryEntry{
+		Time:        time.Now().UTC(),
+		NodeID:      verdict.NodeID,
+		Database:    verdict.Database,
+		Table:       verdict.Table,
+		Partition:   verdict.Partition,
+		PartitionID: verdict.PartitionID,
+		Action:      verdict.Decision,
+		Bytes:       verdict.BytesOnDisk,
+		Outcome:     "started",
 	}
-	if entry.Outcome != "" {
-		return fmt.Errorf("%w: outcome %q", ErrActionFailed, entry.Outcome)
-	}
-	return ErrActionFailed
 }

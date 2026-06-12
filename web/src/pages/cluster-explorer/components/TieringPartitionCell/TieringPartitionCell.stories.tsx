@@ -65,7 +65,7 @@ const meta = {
     },
   },
   tags: ['autodocs'],
-  args: { onApply: fn(), onRetry: fn(), paused: false, awaitingToken: undefined },
+  args: { onApply: fn(), onRetry: fn(), paused: false, awaitingToken: undefined, inFlight: false },
 } satisfies Meta<typeof TieringPartitionCell>;
 
 export default meta;
@@ -109,6 +109,23 @@ export const AwaitingRefresh: Story = {
     // The plan row still carries the token captured at click time, so the
     // button stays disabled until the refetch lands.
     await expect(canvas.getByRole('button')).toBeDisabled();
+  },
+};
+
+export const LegInFlight: Story = {
+  args: {
+    partition: makePartition({}),
+    inFlight: true,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // The controller reports a leg executing for this partition; unlike the
+    // click-time token this survives page reloads.
+    const button = canvas.getByRole('button', {
+      name: 'A leg for this partition is running in the background',
+    });
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveTextContent('Running…');
   },
 };
 

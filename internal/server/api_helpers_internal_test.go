@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"syscall"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -17,6 +21,36 @@ import (
 	"github.com/ethpandaops/clickhouse-movoor/internal/clusterstate"
 	"github.com/ethpandaops/clickhouse-movoor/internal/tiering"
 )
+
+func TestInternalOperationOmitsUnknownNumbers(t *testing.T) {
+	t.Parallel()
+
+	// elapsedSeconds and progress are non-nullable numbers in the API schema:
+	// a move carries no progress and a mutation/replication-queue operation
+	// carries neither, so nil must serialize as an absent key — a null breaks
+	// the generated client's response validation.
+	body, err := json.Marshal(apiOperation(clusterstate.Operation{
+		OperationID: "move|node-a|part-a",
+		Kind:        "move",
+		State:       "running",
+	}))
+	require.NoError(t, err)
+	require.NotContains(t, string(body), "elapsedSeconds")
+	require.NotContains(t, string(body), "progress")
+
+	elapsed := 1.5
+	progress := 0.25
+	body, err = json.Marshal(apiOperation(clusterstate.Operation{
+		OperationID:    "merge|node-a|part-a",
+		Kind:           "merge",
+		State:          "running",
+		ElapsedSeconds: &elapsed,
+		Progress:       &progress,
+	}))
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"elapsedSeconds":1.5`)
+	require.Contains(t, string(body), `"progress":0.25`)
+}
 
 func TestInternalResponseEncodingErrors(t *testing.T) {
 	t.Parallel()
@@ -209,6 +243,55 @@ func TestInternalAggregateHelperBranches(t *testing.T) {
 	}, nil)
 	require.Len(t, partitions, 1)
 	require.Equal(t, "new", partitions[0].partitionID)
+}
+
+func TestInternalWriteJSONDowngradesClientDisconnects(t *testing.T) {
+	t.Parallel()
+
+	capture := &captureLogHandler{}
+	s := &server{log: slog.New(capture)}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/v1/test", nil)
+
+	// Broken pipe: the client closed the socket mid-response.
+	s.writeJSON(pipeErrorResponseWriter{}, req, map[string]any{"ok": true})
+
+	// Cancelled request context: the client vanished before the write.
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	s.writeJSON(errorResponseWriter{}, req.WithContext(cancelled), map[string]any{"ok": true})
+
+	require.Len(t, capture.records, 2)
+	for _, record := range capture.records {
+		require.Less(t, record.Level, slog.LevelError, record.Message)
+	}
+
+	// A genuine encode failure on a live connection stays an error.
+	s.writeJSON(errorResponseWriter{}, req, map[string]any{"ok": true})
+	require.Equal(t, slog.LevelError, capture.records[len(capture.records)-1].Level)
+}
+
+type captureLogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *captureLogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *captureLogHandler) Handle(_ context.Context, record slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, record)
+	return nil
+}
+
+func (h *captureLogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *captureLogHandler) WithGroup(string) slog.Handler { return h }
+
+type pipeErrorResponseWriter struct{ errorResponseWriter }
+
+func (pipeErrorResponseWriter) Write([]byte) (int, error) {
+	return 0, fmt.Errorf("write tcp [::1]:8080->[::1]:57588: %w", syscall.EPIPE)
 }
 
 type errorResponseWriter struct{}

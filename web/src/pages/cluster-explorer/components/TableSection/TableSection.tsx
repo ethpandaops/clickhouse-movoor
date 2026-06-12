@@ -36,6 +36,8 @@ export interface TableSectionProps {
   nodeById: Map<string, Node>;
   tieringIndex: TieringIndex;
   awaitingRefresh: ReadonlyMap<string, string>;
+  /** Partition keys with a controller leg currently executing. */
+  inFlightKeys: ReadonlySet<string>;
   /** Rejection reasons from failed applies, keyed by partition key. */
   applyErrors: ReadonlyMap<string, string>;
   tieringPaused: boolean;
@@ -59,6 +61,7 @@ export function TableSection({
   nodeById,
   tieringIndex,
   awaitingRefresh,
+  inFlightKeys,
   applyErrors,
   tieringPaused,
   flashKey,
@@ -162,6 +165,7 @@ export function TableSection({
                   expandedPartitions={expandedPartitions}
                   tieringIndex={tieringIndex}
                   awaitingRefresh={awaitingRefresh}
+                  inFlightKeys={inFlightKeys}
                   applyErrors={applyErrors}
                   tieringPaused={tieringPaused}
                   flashKey={flashKey}

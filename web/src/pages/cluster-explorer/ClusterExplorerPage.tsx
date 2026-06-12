@@ -231,6 +231,16 @@ export function ClusterExplorerPage({
   const tieringPaused = tieringStatus != null && tieringStatus.pauseState !== 'running';
   const tieringError = tieringPlanQuery.error ?? tieringStatusQuery.error;
   const tieringIndex = useMemo(() => buildTieringIndex(tieringPlan), [tieringPlan]);
+  // Partitions with a leg currently executing in the controller. Unlike
+  // awaitingRefresh this survives page reloads: applies run detached from the
+  // request, so the controller keeps reporting the leg until it converges.
+  const inFlightKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const leg of tieringStatus?.inFlight ?? []) {
+      keys.add(partitionKey(`${leg.database}.${leg.table}`, leg.nodeId, leg.partitionId));
+    }
+    return keys;
+  }, [tieringStatus?.inFlight]);
 
   // Freshness of the collection snapshot: the older of the two reads, plus
   // whether background refetches are currently failing.
@@ -341,6 +351,7 @@ export function ClusterExplorerPage({
                     nodeById={nodeById}
                     tieringIndex={tieringIndex}
                     awaitingRefresh={awaitingRefresh}
+                    inFlightKeys={inFlightKeys}
                     applyErrors={applyErrors}
                     tieringPaused={tieringPaused}
                     flashKey={flashKey}

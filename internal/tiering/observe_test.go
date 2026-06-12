@@ -37,6 +37,25 @@ func TestSQLObserverObserveTableSuccess(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestSQLObserverObserveTableMarksRunningMerges(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+	now := time.Now().UTC()
+	expectObserveSuccess(mock, now, "pid")
+
+	observer := NewSQLObserver(time.Second)
+	watch := EffectiveWatch{Database: "db", Table: "tbl", Settings: ptrSettings(frontierSettings())}
+	obs, err := observer.ObserveTable(t.Context(), chclient.Client{Node: chclient.Node{ID: "n1"}, DB: db}, watch)
+	require.NoError(t, err)
+	require.Len(t, obs.Partitions, 1)
+	require.True(t, obs.Partitions[0].MergeInFlight)
+	for _, condition := range obs.Conditions {
+		require.NotEqual(t, "merges_unreadable", condition.Code)
+	}
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 //nolint:funlen // Warning/error branches share the same observation setup.
 func TestSQLObserverObserveWarningsAndErrors(t *testing.T) {
 	settings := frontierSettings()
@@ -146,7 +165,7 @@ func TestSQLObserverRefreshPartition(t *testing.T) {
 	require.ErrorIs(t, err, sql.ErrNoRows)
 }
 
-func expectObserveSuccess(mock sqlmock.Sqlmock, now time.Time) {
+func expectObserveSuccess(mock sqlmock.Sqlmock, now time.Time, mergingPartitionIDs ...string) {
 	expectMetadata(mock, "ReplicatedMergeTree", "(network_id, intDiv(block_number, 100))", now)
 	mock.ExpectQuery("FROM system.storage_policies").WillReturnRows(sqlmock.NewRows([]string{"policy_name", "volume_name", "volume_priority", "disks_csv", "move_factor"}).
 		AddRow("policy", "hot", uint64(1), "default", 1.0).
@@ -156,6 +175,11 @@ func expectObserveSuccess(mock sqlmock.Sqlmock, now time.Time) {
 	mock.ExpectQuery("FROM system.replication_queue").WillReturnRows(sqlmock.NewRows([]string{"parts_to_merge_csv"}))
 	mock.ExpectQuery("FROM system.mutations").WillReturnRows(sqlmock.NewRows([]string{"mutation_id", "command", "is_done", "parts_to_do", "parts_to_do_names_csv", "latest_failed_part", "latest_fail_reason"}))
 	mock.ExpectQuery("FROM system.part_log").WillReturnRows(sqlmock.NewRows([]string{"partition_id", "latest_new_part", "latest_any", "min_event_time"}).AddRow("pid", now.Add(-time.Hour), now.Add(-time.Hour), now.Add(-2*time.Hour)))
+	mergeRows := sqlmock.NewRows([]string{"partition_id"})
+	for _, partitionID := range mergingPartitionIDs {
+		mergeRows.AddRow(partitionID)
+	}
+	mock.ExpectQuery("FROM system.merges").WillReturnRows(mergeRows)
 	expectParts(mock, now)
 }
 

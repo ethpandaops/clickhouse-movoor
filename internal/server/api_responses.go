@@ -235,17 +235,20 @@ type detachedPartResponse struct {
 }
 
 type operationResponse struct {
-	OperationID    string     `json:"operationId"`
-	Kind           string     `json:"kind"`
-	NodeID         string     `json:"nodeId"`
-	Database       string     `json:"database"`
-	Table          string     `json:"table"`
-	Partition      *string    `json:"partition"`
-	PartitionID    *string    `json:"partitionId"`
-	AttemptID      string     `json:"attemptId"`
-	State          string     `json:"state"`
-	ElapsedSeconds *float64   `json:"elapsedSeconds"`
-	Progress       *float64   `json:"progress"`
+	OperationID string  `json:"operationId"`
+	Kind        string  `json:"kind"`
+	NodeID      string  `json:"nodeId"`
+	Database    string  `json:"database"`
+	Table       string  `json:"table"`
+	Partition   *string `json:"partition"`
+	PartitionID *string `json:"partitionId"`
+	AttemptID   string  `json:"attemptId"`
+	State       string  `json:"state"`
+	// elapsedSeconds and progress are plain (non-nullable) numbers in the API
+	// schema: when unknown they must be omitted, not serialized as null —
+	// moves carry no progress, mutation/replication-queue ops carry neither.
+	ElapsedSeconds *float64   `json:"elapsedSeconds,omitempty"`
+	Progress       *float64   `json:"progress,omitempty"`
 	SourceDisk     *string    `json:"sourceDisk"`
 	TargetDisk     *string    `json:"targetDisk"`
 	BytesTotal     *string    `json:"bytesTotal"`

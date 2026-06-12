@@ -43,6 +43,12 @@ func (c *controller) reconcileLoop(ctx context.Context, client chclient.Client, 
 	if c.usesEnforceMode(watch) {
 		offset := replicaPhaseOffset(client.Node, interval)
 		if offset > 0 {
+			// Publish-only warm-up: the phase offset staggers WRITES so
+			// replicas of a shard never act simultaneously, but it also left
+			// this node×table invisible in the plan for up to a full interval
+			// after startup. Observe and publish immediately; dispatch still
+			// waits out the offset.
+			c.republishTable(ctx, client, watch)
 			select {
 			case <-ctx.Done():
 				return

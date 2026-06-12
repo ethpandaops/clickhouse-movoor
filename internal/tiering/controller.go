@@ -54,6 +54,7 @@ type controller struct {
 	executor         Actuator
 	instrumenter     Instrumenter
 	store            *Store
+	runCtx           context.Context
 	cancel           context.CancelFunc
 	wg               sync.WaitGroup
 	mu               sync.Mutex
@@ -134,6 +135,9 @@ func (c *controller) Start(ctx context.Context) error {
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
+	c.mu.Lock()
+	c.runCtx = runCtx
+	c.mu.Unlock()
 	for _, client := range c.clients {
 		c.seedNode(runCtx, client)
 		for _, watch := range c.cfg.Watches {
@@ -146,6 +150,19 @@ func (c *controller) Start(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// legContext returns the context background legs run on. It is the
+// controller's run context — NOT a request context — so a closed browser tab
+// cannot orphan a leg mid-supervision, while Stop still cancels all legs.
+func (c *controller) legContext() context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.runCtx != nil {
+		return c.runCtx
+	}
+
+	return context.Background()
 }
 
 func (c *controller) Stop(ctx context.Context) error {

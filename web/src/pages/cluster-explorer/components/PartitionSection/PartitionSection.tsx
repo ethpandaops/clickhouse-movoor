@@ -27,6 +27,8 @@ export interface PartitionSectionProps {
   expanded: boolean;
   tieringPartition: TieringPartition | undefined;
   awaitingToken: string | undefined;
+  /** A controller leg is currently executing for this partition. */
+  inFlight: boolean;
   /** Rejection reason from the last failed apply for this partition. */
   applyError?: string;
   tieringPaused: boolean;
@@ -44,6 +46,7 @@ export function PartitionSection({
   expanded,
   tieringPartition,
   awaitingToken,
+  inFlight,
   applyError,
   tieringPaused,
   flash,
@@ -108,6 +111,7 @@ export function PartitionSection({
         <Metric value={formatBytes(partition.bytesOnDisk)} format="text" />
         <TieringPartitionCell
           awaitingToken={awaitingToken}
+          inFlight={inFlight}
           applyError={applyError}
           className={colTieringClass}
           partition={tieringPartition}

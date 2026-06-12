@@ -82,31 +82,48 @@ func (c *Collector) ValidateWatchesDetailed(ctx context.Context) (WatchValidatio
 	return summary, err
 }
 
+// collectWatchValidationItems resolves every watch in a single system.tables
+// query per node: one round-trip per watch does not fit inside one
+// queryTimeout once the watch count grows past a few dozen.
 func (c *Collector) collectWatchValidationItems(ctx context.Context, client chclient.Client) ([]WatchValidationItem, error) {
+	if len(c.watches) == 0 {
+		return nil, nil
+	}
+
+	predicate, args := c.watchPredicate("name")
+	rows, err := client.DB.QueryContext(ctx, fmt.Sprintf(`
+		SELECT database, name, engine
+		FROM system.tables
+		WHERE %s
+	`, predicate), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	engines := make(map[Watch]string, len(c.watches))
+	for rows.Next() {
+		var table Watch
+		var engine string
+		if scanErr := rows.Scan(&table.Database, &table.Table, &engine); scanErr != nil {
+			return nil, scanErr
+		}
+		engines[table] = engine
+	}
+	if rowsErr := rows.Err(); rowsErr != nil {
+		return nil, rowsErr
+	}
+
 	items := make([]WatchValidationItem, 0, len(c.watches))
 	for _, watch := range c.watches {
 		item := WatchValidationItem{
 			Node:  client.Node,
 			Watch: watch,
 		}
-
-		err := client.DB.QueryRowContext(ctx, `
-			SELECT engine
-			FROM system.tables
-			WHERE database = ? AND name = ?
-			LIMIT 1
-		`, watch.Database, watch.Table).Scan(&item.Engine)
-		if err != nil {
-			if errorsIsNoRows(err) {
-				items = append(items, item)
-
-				continue
-			}
-
-			return nil, err
+		if engine, ok := engines[watch]; ok {
+			item.Engine = engine
+			item.Found = true
 		}
-
-		item.Found = true
 		items = append(items, item)
 	}
 

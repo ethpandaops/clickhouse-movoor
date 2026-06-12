@@ -580,9 +580,12 @@ export const resumeTiering = <ThrowOnError extends boolean = false>(
 /**
  * Apply one tiering decision
  *
- * Runs one supervised executor attempt for the partition's current
+ * Starts one supervised executor attempt for the partition's current
  * actionable verdict. The request must include nodeId and the stateToken
- * observed from /tiering/plan; stale tokens return 409.
+ * observed from /tiering/plan; stale tokens return 409. The leg runs
+ * detached from the request: the 202 response acknowledges admission with
+ * outcome "started", the leg is visible in /tiering/status inFlight until
+ * it converges, and its completion lands in /tiering/history.
  *
  */
 export const applyTieringPartition = <ThrowOnError extends boolean = false>(
@@ -611,7 +614,9 @@ export const applyTieringPartition = <ThrowOnError extends boolean = false>(
  *
  * Re-runs one supervised executor attempt for a stalled partition. The
  * request must include nodeId and the current stateToken from
- * /tiering/plan; stale tokens return 409.
+ * /tiering/plan; stale tokens return 409. Like apply, the leg runs
+ * detached from the request and the 202 acknowledges admission with
+ * outcome "started".
  *
  */
 export const retryTieringPartition = <ThrowOnError extends boolean = false>(

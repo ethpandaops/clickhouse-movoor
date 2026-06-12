@@ -406,6 +406,21 @@ func TestObserverEdgeCoverage(t *testing.T) {
 	require.NoError(t, flushObserver.flushGuardLogs(t.Context(), client))
 	require.NoError(t, flushObserver.flushGuardLogs(t.Context(), client))
 	require.NoError(t, mock14.ExpectationsWereMet())
+
+	db15, mock15, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db15.Close()
+	mock15.ExpectQuery("FROM system.merges").
+		WillReturnRows(sqlmock.NewRows([]string{"partition_id"}).AddRow(nil))
+	_, err = observer.collectRunningMerges(t.Context(), db15, "db", "tbl")
+	require.Error(t, err)
+
+	// Watches without settings are skipped, leaving nothing to seed — the
+	// nil DB proves no query is issued.
+	seeded, err := observer.SeedMovedBytesToday(t.Context(), chclient.Client{},
+		[]EffectiveWatch{{Database: "db", Table: "skip"}})
+	require.NoError(t, err)
+	require.Zero(t, seeded)
 }
 
 func TestControllerEdgeCoverage(t *testing.T) {
@@ -415,7 +430,11 @@ func TestControllerEdgeCoverage(t *testing.T) {
 	c, ok := ctrl.(*controller)
 	require.True(t, ok)
 	require.NoError(t, c.Start(t.Context()))
+	legCtx := c.legContext()
 	require.NoError(t, c.Stop(t.Context()))
+	// legContext must hand out the run context, which Stop cancels — the
+	// Background fallback would never be cancelled.
+	require.ErrorIs(t, legCtx.Err(), context.Canceled)
 	require.NotNil(t, NewStore(0))
 
 	settings := frontierSettings()
@@ -483,12 +502,4 @@ func TestErrorHelperEdgeCoverage(t *testing.T) {
 	t.Parallel()
 
 	require.False(t, isContextCanceled(nil, errors.New("boom"))) //nolint:staticcheck // Intentionally covers the helper's nil-context guard.
-
-	err := actionFailedError(HistoryEntry{Outcome: "skipped"})
-	require.ErrorIs(t, err, ErrActionFailed)
-	require.EqualError(t, err, `tiering action failed: outcome "skipped"`)
-
-	err = actionFailedError(HistoryEntry{})
-	require.ErrorIs(t, err, ErrActionFailed)
-	require.EqualError(t, err, "tiering action failed")
 }

@@ -574,9 +574,12 @@ paths:
       operationId: applyTieringPartition
       summary: Apply one tiering decision
       description: |
-        Runs one supervised executor attempt for the partition's current
+        Starts one supervised executor attempt for the partition's current
         actionable verdict. The request must include nodeId and the stateToken
-        observed from /tiering/plan; stale tokens return 409.
+        observed from /tiering/plan; stale tokens return 409. The leg runs
+        detached from the request: the 202 response acknowledges admission with
+        outcome "started", the leg is visible in /tiering/status inFlight until
+        it converges, and its completion lands in /tiering/history.
       tags:
         - tiering
       parameters:
@@ -592,7 +595,7 @@ paths:
               $ref: "#/components/schemas/TieringApplyRequest"
       responses:
         "202":
-          description: Apply accepted and completed for the current implementation.
+          description: Apply admitted; the leg runs in the background.
           content:
             application/json:
               schema:
@@ -615,7 +618,9 @@ paths:
       description: |
         Re-runs one supervised executor attempt for a stalled partition. The
         request must include nodeId and the current stateToken from
-        /tiering/plan; stale tokens return 409.
+        /tiering/plan; stale tokens return 409. Like apply, the leg runs
+        detached from the request and the 202 acknowledges admission with
+        outcome "started".
       tags:
         - tiering
       parameters:
@@ -631,7 +636,7 @@ paths:
               $ref: "#/components/schemas/TieringApplyRequest"
       responses:
         "202":
-          description: Retry accepted and completed for the current implementation.
+          description: Retry admitted; the leg runs in the background.
           content:
             application/json:
               schema:
@@ -2927,8 +2932,13 @@ components:
           $ref: "#/components/schemas/TieringDecision"
         outcome:
           type: string
+          description: |
+            "success" or "error" for completed legs in history; "started" in
+            apply/retry responses, acknowledging a leg that now runs in the
+            background.
           examples:
             - success
+            - started
         durationMs:
           type: integer
           minimum: 0

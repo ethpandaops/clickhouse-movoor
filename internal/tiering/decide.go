@@ -435,6 +435,15 @@ func sealed(obs TableObservation, partition PartitionObservation, quietFor time.
 	if ok, reason, conditions := mutationGate(obs, partition); !ok {
 		return sealCheck{reason: reason, detail: &HoldDetail{Gate: "mutation"}, conditions: conditions}
 	}
+	if partition.MergeInFlight {
+		// A running merge means the partition's parts are not movable and a
+		// further OPTIMIZE is at best a no-op — whether the merge is our own
+		// (possibly from a disowned supervised leg) or foreign. Wait it out.
+		return sealCheck{
+			reason: "a merge is currently running for this partition",
+			detail: &HoldDetail{Gate: "merge-in-flight"},
+		}
+	}
 	if obs.Settings.SealedSignal == SealedSignalPartLog && conditionPresent(obs.Conditions, "part_log_unreadable") {
 		return sealCheck{
 			reason:     "part_log evidence is unavailable",

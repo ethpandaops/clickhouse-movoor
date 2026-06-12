@@ -200,7 +200,10 @@ func (s *server) handleTieringAction(w http.ResponseWriter, r *http.Request, ret
 	} else {
 		entry, err = controller.Apply(r.Context(), nodeID, r.PathValue("database"), r.PathValue("table"), r.PathValue("partitionId"), body.StateToken)
 	}
-	if err == nil && entry.Outcome != "" && entry.Outcome != "success" {
+	// "started" is the detached-leg acknowledgement: the action was admitted
+	// and runs in the background; completion lands in history and the leg is
+	// visible via the status endpoint's in-flight list until it converges.
+	if err == nil && entry.Outcome != "" && entry.Outcome != "success" && entry.Outcome != "started" {
 		err = tieringEntryError(entry)
 	}
 	if err != nil {

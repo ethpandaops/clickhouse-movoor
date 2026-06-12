@@ -270,7 +270,8 @@ func TestRunReturnsWatchValidationError(t *testing.T) {
 	})
 	mock.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("Distributed"))
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "Distributed"))
 
 	app := &App{
 		log: slog.New(slog.DiscardHandler),
@@ -300,7 +301,8 @@ func TestRunStartsWithDegradedClickHouseValidation(t *testing.T) {
 	})
 	mockA.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("MergeTree"))
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "MergeTree"))
 	mockB.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
 		WillReturnError(errors.New("connection refused"))
@@ -449,7 +451,8 @@ func TestRunFailsOnSchemaErrorFromRespondingNodeEvenWhenAnotherNodeIsDown(t *tes
 	})
 	mockA.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("Distributed"))
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "Distributed"))
 	mockB.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
 		WillReturnError(errors.New("connection refused"))
@@ -597,7 +600,8 @@ func TestValidateWatchesLogsWarnings(t *testing.T) {
 	})
 	mockA.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("MergeTree"))
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "MergeTree"))
 	mockB.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
 		WillReturnError(errors.New("query failed"))
@@ -624,7 +628,8 @@ func TestValidateWatchesReturnsError(t *testing.T) {
 	})
 	mock.ExpectQuery("(?s).*FROM system\\.tables.*").
 		WithArgs("db", "tbl").
-		WillReturnRows(sqlmock.NewRows([]string{"engine"}).AddRow("Distributed"))
+		WillReturnRows(sqlmock.NewRows([]string{"database", "name", "engine"}).
+			AddRow("db", "tbl", "Distributed"))
 
 	app := &App{
 		log: slog.New(slog.DiscardHandler),

@@ -153,6 +153,9 @@ func TestControllerEnforcePhaseOffset(t *testing.T) {
 	require.Zero(t, replicaPhaseOffset(node, 0))
 }
 
+// cases share one controller fixture; splitting them would duplicate it.
+//
+//nolint:funlen // The async apply/retry happy paths and the validation error
 func TestControllerApply(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)
@@ -193,11 +196,17 @@ func TestControllerApply(t *testing.T) {
 
 	entry, err := c.Apply(t.Context(), "n1", "db", "tbl", "pid", verdict.Token)
 	require.NoError(t, err)
-	require.Equal(t, "success", entry.Outcome)
+	require.Equal(t, "started", entry.Outcome)
+	c.wg.Wait()
+	require.Empty(t, c.InFlight())
+	history := store.History()
+	require.NotEmpty(t, history)
+	require.Equal(t, "success", history[len(history)-1].Outcome)
 	c.stalled = map[string]stalledPartition{flightKey(verdict): {Token: verdict.Token, Until: time.Now().Add(time.Hour), Reason: "failed"}}
 	entry, err = c.Retry(t.Context(), "n1", "db", "tbl", "pid", verdict.Token)
 	require.NoError(t, err)
-	require.Equal(t, "success", entry.Outcome)
+	require.Equal(t, "started", entry.Outcome)
+	c.wg.Wait()
 	require.Empty(t, c.stalled)
 	_, err = c.Retry(t.Context(), "n1", "db", "tbl", "pid", "bad")
 	require.ErrorContains(t, err, "token")
@@ -249,17 +258,63 @@ func TestControllerApplyReturnsExecutorFailure(t *testing.T) {
 		executor: fakeActuator{entry: HistoryEntry{Outcome: "error", Error: "move failed"}},
 	}
 
+	// The apply is acknowledged before the executor runs; the failure surfaces
+	// asynchronously as a stall mark plus the republished hold verdict.
 	entry, err := c.Apply(t.Context(), "n1", "db", "tbl", "pid", verdict.Token)
-	require.ErrorIs(t, err, ErrActionFailed)
-	require.ErrorContains(t, err, "move failed")
-	require.Equal(t, "error", entry.Outcome)
+	require.NoError(t, err)
+	require.Equal(t, "started", entry.Outcome)
+	c.wg.Wait()
 	require.Empty(t, c.InFlight())
+	require.Contains(t, c.stalled, flightKey(verdict))
+	require.Equal(t, "move failed", c.stalled[flightKey(verdict)].Reason)
 
 	snapshot := c.store.Snapshot()
 	require.Len(t, snapshot.Tables, 1)
 	require.Len(t, snapshot.Tables[0].Verdicts, 1)
 	require.Equal(t, StatusStalled, snapshot.Tables[0].Verdicts[0].Status)
 	require.Equal(t, DecisionHold, snapshot.Tables[0].Verdicts[0].Decision)
+}
+
+func TestReconcileLoopPublishesBeforePhaseOffset(t *testing.T) {
+	t.Parallel()
+
+	settings := frontierSettings()
+	settings.Mode = ModeEnforce
+	now := time.Now().UTC()
+	table := frontierObservation(now)
+	table.Database = "db"
+	table.Table = "tbl"
+	watch := EffectiveWatch{Database: "db", Table: "tbl", Settings: &settings}
+
+	cfg := DefaultConfig()
+	cfg.Mode = ModeEnforce
+	cfg.Interval = Duration{Duration: time.Hour}
+	node := chclient.Node{ID: "n1", Shard: "1", Replica: "2"}
+	// The warm-up path only exists for nodes with a non-zero phase offset.
+	require.Positive(t, replicaPhaseOffset(node, time.Hour))
+
+	c := &controller{
+		log:      slog.New(slog.DiscardHandler),
+		cfg:      ControllerConfig{Tiering: cfg, Watches: []EffectiveWatch{watch}},
+		observer: fakeTableObserver{table: table},
+		store:    NewStore(10),
+		inFlight: make(map[string]InFlightLeg),
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		c.reconcileLoop(ctx, chclient.Client{Node: node}, watch)
+		close(done)
+	}()
+
+	// The plan must appear well before the hour-scale phase offset elapses:
+	// the warm-up publishes immediately, only dispatch waits.
+	require.Eventually(t, func() bool {
+		return len(c.store.Snapshot().Tables) == 1
+	}, 5*time.Second, 10*time.Millisecond)
+	cancel()
+	<-done
 }
 
 func TestControllerApplyRespectsPause(t *testing.T) {

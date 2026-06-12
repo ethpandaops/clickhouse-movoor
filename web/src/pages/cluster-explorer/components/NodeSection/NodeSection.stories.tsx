@@ -37,6 +37,7 @@ const meta = {
     tableKeyValue,
     tieringIndex,
     awaitingRefresh: new Map<string, string>(),
+    inFlightKeys: new Set<string>(),
     applyErrors: new Map<string, string>(),
     tieringPaused: false,
     flashKey: null,

@@ -69,6 +69,9 @@ type PartitionObservation struct {
 	LatestNewPart       *time.Time
 	LatestPartLogEvent  *time.Time
 	Hashes              []PartHash
+	// MergeInFlight reports a merge currently running in system.merges for
+	// this partition — movoor's own, an orphaned leg's, or a foreign one.
+	MergeInFlight bool
 }
 
 type DiskPart struct {
@@ -209,6 +212,10 @@ func (o *SQLObserver) ObserveTable(ctx context.Context, client chclient.Client, 
 	} else {
 		obs.PartLogMinTime = minEvent
 	}
+	merging, err := o.collectRunningMerges(queryCtx, client.DB, obs.Database, obs.Table)
+	if err != nil {
+		obs.Conditions = append(obs.Conditions, NewCondition(ConditionSeverityWarning, "merges_unreadable", err.Error(), obs.Node.ID, obs.Database, obs.Table, "", ""))
+	}
 	partitions, err := o.collectPartitionRollup(queryCtx, client.DB, obs)
 	if err != nil {
 		return TableObservation{}, err
@@ -218,10 +225,39 @@ func (o *SQLObserver) ObserveTable(ctx context.Context, client chclient.Client, 
 			partitions[i].LatestNewPart = event.LatestNewPart
 			partitions[i].LatestPartLogEvent = event.LatestAny
 		}
+		if _, ok := merging[partitions[i].PartitionID]; ok {
+			partitions[i].MergeInFlight = true
+		}
 	}
 	obs.Partitions = partitions
 
 	return obs, nil
+}
+
+// collectRunningMerges reports the partition IDs with a merge currently
+// executing on this node. Decide holds those partitions: a MOVE of parts that
+// are mid-merge is rejected by ClickHouse, and a second OPTIMIZE is at best a
+// no-op — surfacing the merge keeps the plan (and its apply buttons) honest.
+func (o *SQLObserver) collectRunningMerges(ctx context.Context, db *sql.DB, database string, table string) (map[string]struct{}, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT DISTINCT partition_id
+		FROM system.merges
+		WHERE database = ? AND table = ?
+	`, database, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	merging := make(map[string]struct{})
+	for rows.Next() {
+		var partitionID string
+		if scanErr := rows.Scan(&partitionID); scanErr != nil {
+			return nil, scanErr
+		}
+		merging[partitionID] = struct{}{}
+	}
+	return merging, rows.Err()
 }
 
 func (o *SQLObserver) CaptureBootTime(ctx context.Context, client chclient.Client) (time.Time, error) {
@@ -236,26 +272,33 @@ func (o *SQLObserver) CaptureBootTime(ctx context.Context, client chclient.Clien
 }
 
 func (o *SQLObserver) SeedMovedBytesToday(ctx context.Context, client chclient.Client, watches []EffectiveWatch) (uint64, error) {
-	queryCtx, cancel := o.queryContext(ctx)
-	defer cancel()
-
-	var total uint64
+	pairs := make([]string, 0, len(watches))
+	args := make([]any, 0, len(watches)*2)
 	for _, watch := range watches {
 		if watch.Settings == nil {
 			continue
 		}
-		var tableBytes uint64
-		if err := client.DB.QueryRowContext(queryCtx, `
-			SELECT coalesce(sum(size_in_bytes), 0)
-			FROM system.part_log
-			WHERE event_type = 'MovePart'
-				AND event_date = today()
-				AND database = ?
-				AND table = ?
-		`, watch.Database, watch.Table).Scan(&tableBytes); err != nil {
-			return total, fmt.Errorf("seed moved bytes for %s.%s: %w", watch.Database, watch.Table, err)
-		}
-		total += tableBytes
+		pairs = append(pairs, "(?, ?)")
+		args = append(args, watch.Database, watch.Table)
+	}
+	if len(pairs) == 0 {
+		return 0, nil
+	}
+
+	queryCtx, cancel := o.queryContext(ctx)
+	defer cancel()
+
+	// One batched query: per-watch round-trips do not fit inside a single
+	// queryTimeout once the watch count grows.
+	var total uint64
+	if err := client.DB.QueryRowContext(queryCtx, fmt.Sprintf(`
+		SELECT coalesce(sum(size_in_bytes), 0)
+		FROM system.part_log
+		WHERE event_type = 'MovePart'
+			AND event_date = today()
+			AND (database, table) IN (%s)
+	`, strings.Join(pairs, ", ")), args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("seed moved bytes: %w", err)
 	}
 	return total, nil
 }

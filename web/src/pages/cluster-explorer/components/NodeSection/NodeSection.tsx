@@ -31,6 +31,8 @@ export interface NodeSectionProps {
   expandedPartitions: Set<string>;
   tieringIndex: TieringIndex;
   awaitingRefresh: ReadonlyMap<string, string>;
+  /** Partition keys with a controller leg currently executing. */
+  inFlightKeys: ReadonlySet<string>;
   /** Rejection reasons from failed applies, keyed by partition key. */
   applyErrors: ReadonlyMap<string, string>;
   tieringPaused: boolean;
@@ -50,6 +52,7 @@ export function NodeSection({
   expandedPartitions,
   tieringIndex,
   awaitingRefresh,
+  inFlightKeys,
   applyErrors,
   tieringPaused,
   flashKey,
@@ -140,6 +143,7 @@ export function NodeSection({
                   expanded={partitionExpanded}
                   tieringPartition={tieringIndex.byPartition.get(partitionKeyValue)}
                   awaitingToken={awaitingRefresh.get(partitionKeyValue)}
+                  inFlight={inFlightKeys.has(partitionKeyValue)}
                   applyError={applyErrors.get(partitionKeyValue)}
                   tieringPaused={tieringPaused}
                   flash={flashKey === partitionKeyValue}

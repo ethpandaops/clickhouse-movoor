@@ -1323,7 +1323,7 @@ export const zApplyTieringPartitionQuery = z.object({
 });
 
 /**
- * Apply accepted and completed for the current implementation.
+ * Apply admitted; the leg runs in the background.
  */
 export const zApplyTieringPartitionResponse = zTieringApplyResponse;
 
@@ -1340,6 +1340,6 @@ export const zRetryTieringPartitionQuery = z.object({
 });
 
 /**
- * Retry accepted and completed for the current implementation.
+ * Retry admitted; the leg runs in the background.
  */
 export const zRetryTieringPartitionResponse = zTieringApplyResponse;

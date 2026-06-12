@@ -17,6 +17,7 @@ import { fallbackTieringVisual, tieringDisplayLabel, tieringVisuals } from '../T
 export function TieringPartitionCell({
   partition,
   awaitingToken,
+  inFlight,
   paused,
   applyError,
   className,
@@ -25,6 +26,8 @@ export function TieringPartitionCell({
 }: {
   partition: TieringPartition | undefined;
   awaitingToken: string | undefined;
+  /** A controller leg is currently executing for this partition. */
+  inFlight: boolean;
   paused: boolean;
   /** Rejection reason from the last failed apply for this partition. */
   applyError?: string;
@@ -51,12 +54,16 @@ export function TieringPartitionCell({
     );
   }
 
-  const title = actionTitle(partition, retryable, paused);
+  const title = inFlight
+    ? 'A leg for this partition is running in the background'
+    : actionTitle(partition, retryable, paused);
   // Stay disabled from click until the plan row actually advances: while the
   // rendered state token still matches the one captured at click time, this
-  // row is stale data from before the leg ran.
+  // row is stale data from before the leg ran. inFlight is the durable signal
+  // from the controller itself — applies run detached from the request, so it
+  // survives page reloads where the click-time token does not.
   const awaitingRow = awaitingToken !== undefined && awaitingToken === partition.stateToken;
-  const buttonLabel = retryable ? 'Retry' : tieringDisplayLabel(label);
+  const buttonLabel = inFlight ? 'Running…' : retryable ? 'Retry' : tieringDisplayLabel(label);
 
   return (
     <div className={clsx('flex min-w-0 items-center justify-end gap-1.5', className)}>
@@ -79,7 +86,7 @@ export function TieringPartitionCell({
         <button
           type="button"
           aria-label={title}
-          disabled={awaitingRow || paused}
+          disabled={awaitingRow || paused || inFlight}
           onClick={event => {
             event.stopPropagation();
             if (retryable) {

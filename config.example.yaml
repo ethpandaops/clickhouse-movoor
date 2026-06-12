@@ -1,7 +1,9 @@
 # clickhouse-movoor configuration.
 #
-# Durations use ms, s, m, h, d, w, or y, and can be compound, for example
-# 1h30m. Byte sizes use base-2 suffixes: KiB, MiB, GiB, TiB, or PiB.
+# Durations in the tiering and watches sections use ms, s, m, h, d, w, or y,
+# and can be compound, for example 1h30m. The clickhouse timeouts are standard
+# Go durations (ns, us, ms, s, m, h) and do not accept d, w, or y. Byte sizes
+# use base-2 suffixes: KiB, MiB, GiB, TiB, or PiB.
 
 logging: info # debug, info, warn/warning, or error
 metricsAddr: ":9090"
@@ -14,6 +16,7 @@ healthCheckAddr: ":8081"
 #   sampleRatio: 1.0
 
 clickhouse:
+  # Standard Go durations; d/w/y suffixes are not accepted here.
   queryTimeout: 30s
   dialTimeout: 5s
 
@@ -45,6 +48,12 @@ tiering:
   # off observes only, plan computes decisions without ALTERs, enforce applies
   # movement/optimization decisions.
   mode: plan
+
+  # Pause between reconcile cycles. Every node/watch pair runs its own
+  # observe -> decide -> act loop and sleeps this long between cycles; failed
+  # cycles back off further, and replicas of the same shard are phase-offset
+  # within the interval so they never act simultaneously. Together with
+  # safety.maxMovesPerCycle this paces how quickly movement is admitted.
   interval: 5m
 
   # Per-node cap on concurrently executing partition legs.
@@ -77,15 +86,29 @@ tiering:
   defaults:
     # mode: plan # optional per-table default; otherwise tiering.mode is used
     # Replace this with the ClickHouse disk name to move cold partitions onto.
+    # Omitting targetDisk entirely silently defaults it to s3_cache.
     targetDisk: cold_disk
 
     # Optional explicit hot volume. If omitted, movoor infers the volume before
     # the target disk in the table's storage policy.
     # hotVolume: hot
 
+    # How long a partition must be free of new inserts before movoor treats it
+    # as sealed and eligible for optimize/move. Prevents moving partitions that
+    # are still being written, which would split them across disks. sealedSignal
+    # picks the insert evidence: partLog uses part_log insert events and holds
+    # the partition when they are unavailable, modificationTime uses the parts'
+    # last-physical-change clock (merges and moves reset it too, so each action
+    # waits out a fresh window), and auto prefers partLog and degrades to
+    # modificationTime when part_log coverage is missing.
     quietFor: 24h
     sealedSignal: auto # auto, partLog, or modificationTime
-    tierFrozenAfter: 30d
+    # Dead-group escape: age rules hold the newest partitions of a group until
+    # ingest provably moves past them (frontier advance or newer-partition
+    # inserts), which would park a group that stopped receiving data on the hot
+    # disk forever. Once every partition in the group has been insert-free for
+    # this long, the group counts as dead and its partitions tier anyway.
+    tierFrozenAfter: 30d # must be >= quietFor
 
     optimizeToParts: 1
     skipOptimize: false
@@ -98,6 +121,8 @@ tiering:
       # target disk, auto appends below the fragment ceiling and remerges above
       # it, and hold leaves split partitions untouched.
       strategy: remerge # auto, remerge, append, or hold
+      # Insert-quiet window required before repairing a split partition; must
+      # be >= the tier block's quietFor.
       quietFor: 7d
       fragmentAbovePartCount: 6
 

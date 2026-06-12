@@ -869,6 +869,12 @@ export type TieringHistoryEntry = {
   partition: string;
   partitionId: string;
   action: TieringDecision;
+  /**
+   * "success" or "error" for completed legs in history; "started" in
+   * apply/retry responses, acknowledging a leg that now runs in the
+   * background.
+   *
+   */
   outcome: string;
   durationMs: number;
   bytes: UInt64String;
@@ -2229,7 +2235,7 @@ export type ApplyTieringPartitionError = ApplyTieringPartitionErrors[keyof Apply
 
 export type ApplyTieringPartitionResponses = {
   /**
-   * Apply accepted and completed for the current implementation.
+   * Apply admitted; the leg runs in the background.
    */
   202: TieringApplyResponse;
 };
@@ -2288,7 +2294,7 @@ export type RetryTieringPartitionError = RetryTieringPartitionErrors[keyof Retry
 
 export type RetryTieringPartitionResponses = {
   /**
-   * Retry accepted and completed for the current implementation.
+   * Retry admitted; the leg runs in the background.
    */
   202: TieringApplyResponse;
 };
