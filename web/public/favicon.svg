@@ -10,20 +10,51 @@
   <rect x="6" y="6" width="244" height="244" rx="54" fill="#000000" />
 
   <g clip-path="url(#tile)">
-    <!-- hot partitions: stay local -->
-    <rect x="52" y="56" width="152" height="36" rx="10" fill="#00ff88" />
-    <rect x="52" y="110" width="152" height="36" rx="10" fill="#00ff88" />
-
-    <!-- cold partition: moving to the configured target disk -->
+    <!-- cold partition: departs to the configured target disk -->
     <g>
-      <rect x="124" y="164" width="152" height="36" rx="10" fill="#ff33cc" />
+      <rect x="52" y="56" width="152" height="36" rx="10" fill="#ff33cc" />
       <animateTransform
         attributeName="transform"
         type="translate"
-        dur="4.2s"
+        dur="6s"
         repeatCount="indefinite"
-        keyTimes="0;0.3;0.75;1"
-        values="-72 0;-72 0;132 0;132 0"
+        keyTimes="0;0.2;0.45;1"
+        values="0 0;0 0;210 0;210 0"
+        calcMode="spline"
+        keySplines="0 0 1 1;0.4 0 0.2 1;0 0 1 1"
+      />
+    </g>
+
+    <!-- hot partitions: slide up once the cold one departs -->
+    <g>
+      <!-- top of the stack goes cold after the climb -->
+      <rect x="52" y="110" width="152" height="36" rx="10" fill="#00ff88">
+        <animate
+          attributeName="fill"
+          dur="6s"
+          repeatCount="indefinite"
+          keyTimes="0;0.78;0.83;0.88;0.92;1"
+          values="#00ff88;#00ff88;#22ccdd;#aa44ee;#ff33cc;#ff33cc"
+        />
+      </rect>
+      <rect x="52" y="164" width="152" height="36" rx="10" fill="#00ff88" />
+      <!-- fresh partition fades in as the stack climbs -->
+      <rect x="52" y="218" width="152" height="36" rx="10" fill="#00ff88" opacity="0">
+        <animate
+          attributeName="opacity"
+          dur="6s"
+          repeatCount="indefinite"
+          keyTimes="0;0.52;0.72;1"
+          values="0;0;1;1"
+        />
+      </rect>
+      <animateTransform
+        attributeName="transform"
+        type="translate"
+        dur="6s"
+        repeatCount="indefinite"
+        keyTimes="0;0.52;0.72;1"
+        values="0 0;0 0;0 -54;0 -54"
         calcMode="spline"
         keySplines="0 0 1 1;0.4 0 0.2 1;0 0 1 1"
       />

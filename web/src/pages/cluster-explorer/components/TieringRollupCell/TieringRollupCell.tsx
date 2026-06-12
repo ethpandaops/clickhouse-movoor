@@ -23,7 +23,7 @@ export function TieringRollupCell({
   let visual = fallbackTieringVisual;
   let label = `${rollup.total} checked`;
   if (rollup.actionable > 0) {
-    visual = tieringVisuals.tier;
+    visual = tieringVisuals.actions;
     label = formatCount(rollup.actionable.toString(), 'action');
   } else if (rollup.split > 0) {
     visual = tieringVisuals.split;

@@ -1,6 +1,6 @@
 {
-  "name": "clickhouse-movoor",
-  "short_name": "movoor",
+  "name": "Clickhouse Movoor",
+  "short_name": "Movoor",
   "icons": [
     {
       "src": "/web-app-manifest-192x192.png",

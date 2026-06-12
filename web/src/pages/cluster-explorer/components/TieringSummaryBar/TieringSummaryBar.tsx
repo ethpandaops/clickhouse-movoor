@@ -16,20 +16,13 @@ import {
   formatTimestamp,
   toBigInt,
 } from '@/utils/format';
-import {
-  decisionTone,
-  isActionableDecision,
-  operationTone,
-  statusTone,
-  tableErrorCount,
-  tieringCounts,
-} from '../../tiering-model';
+import { decisionTone, isActionableDecision, statusTone, tableErrorCount, tieringCounts } from '../../tiering-model';
 import { Badge } from '../Badge';
 import { ExpandButton } from '../ExpandButton';
 import { FreshnessIndicator } from '../FreshnessIndicator';
 import { RunStatePill } from '../RunStatePill';
 import { SummaryStat } from '../SummaryStat';
-import { fallbackTieringVisual, TieringChip, tieringVisuals } from '../TieringChip';
+import { ActionsIcon, fallbackTieringVisual, operationVisual, TieringChip, tieringVisuals } from '../TieringChip';
 
 /** A failed pause/resume attempt, surfaced as a dismissible alert. */
 export interface TieringControlError {
@@ -100,6 +93,10 @@ export function TieringSummaryBar({
   onDismissControlError,
 }: TieringSummaryBarProps): JSX.Element {
   const legs = status?.inFlight ?? [];
+  const visibleOperations = operations.slice(0, 8);
+  // "recent actions" mirrors the row count of "active now" so the two drawer
+  // columns fill out evenly, but never drops below 10 entries.
+  const recentLimit = Math.max(10, legs.length + (operationsError == null ? visibleOperations.length : 0));
   const degraded = error != null;
 
   const counts = tieringCounts(plan.items);
@@ -145,7 +142,12 @@ export function TieringSummaryBar({
               danger={collection?.partial === true}
             />
             <SummaryStat label="partitions" value={formatInteger(plan.items.length.toString())} />
-            <SummaryStat label="actions" value={formatInteger(actionable.toString())} accent={actionable > 0} />
+            <SummaryStat
+              label="actions"
+              value={formatInteger(actionable.toString())}
+              accent={actionable > 0}
+              icon={actionable > 0 ? ActionsIcon : undefined}
+            />
             {status && <SummaryStat label="in flight" value={formatBytes(status.bytesInFlight)} />}
             {status && (
               <SummaryStat
@@ -253,7 +255,7 @@ export function TieringSummaryBar({
                 <div className="mt-1 text-xs text-muted">nothing in flight</div>
               ) : (
                 <ul className="mt-1 space-y-1">
-                  {operations.slice(0, 8).map(op => (
+                  {visibleOperations.map(op => (
                     <li key={op.operationId}>
                       <button
                         type="button"
@@ -266,7 +268,7 @@ export function TieringSummaryBar({
                         }}
                         className="-mx-1 flex w-full min-w-0 items-center gap-2 rounded-sm px-1 text-left text-xs transition-colors enabled:cursor-pointer enabled:hover:bg-primary/10"
                       >
-                        <Badge tone={operationTone(op.kind)}>{op.kind}</Badge>
+                        <TieringChip label={op.kind} visual={operationVisual(op.kind)} />
                         <span className="truncate font-mono text-foreground" title={`${op.database}.${op.table}`}>
                           {op.table}
                           {op.partition ? ` ${op.partition}` : ''}
@@ -298,7 +300,7 @@ export function TieringSummaryBar({
                 <div className="mt-1 text-xs text-muted">none yet</div>
               ) : (
                 <ul className="mt-1 space-y-1">
-                  {recent.slice(0, 8).map(entry => (
+                  {recent.slice(0, recentLimit).map(entry => (
                     <li key={`${entry.attemptId ?? entry.time}/${entry.partitionId}`}>
                       <button
                         type="button"

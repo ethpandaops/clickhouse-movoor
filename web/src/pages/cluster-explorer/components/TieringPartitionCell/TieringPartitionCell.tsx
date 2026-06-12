@@ -1,11 +1,11 @@
 import type { JSX } from 'react';
 import clsx from 'clsx';
-import { ExclamationTriangleIcon } from '@heroicons/react/20/solid';
+import { ArrowPathIcon, ExclamationTriangleIcon } from '@heroicons/react/20/solid';
 import type { TieringPartition } from '@/api/types.gen';
 import { Tooltip } from '@/components/Overlays/Tooltip';
 import { formatRelative } from '@/utils/format';
 import { isActionableDecision } from '../../tiering-model';
-import { TieringChip } from '../TieringChip';
+import { RunningIcon, TieringChip } from '../TieringChip';
 import { fallbackTieringVisual, tieringDisplayLabel, tieringVisuals } from '../TieringChip';
 
 /**
@@ -64,6 +64,7 @@ export function TieringPartitionCell({
   // survives page reloads where the click-time token does not.
   const awaitingRow = awaitingToken !== undefined && awaitingToken === partition.stateToken;
   const buttonLabel = inFlight ? 'Running…' : retryable ? 'Retry' : tieringDisplayLabel(label);
+  const ButtonIcon = inFlight ? RunningIcon : retryable ? ArrowPathIcon : visual.icon;
 
   return (
     <div className={clsx('flex min-w-0 items-center justify-end gap-1.5', className)}>
@@ -96,10 +97,11 @@ export function TieringPartitionCell({
             }
           }}
           className={clsx(
-            'inline-flex h-7 min-w-0 items-center rounded-md bg-primary px-2.5 text-xs font-semibold text-on-primary shadow-sm shadow-primary/30 transition-all hover:shadow-primary/60 hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none',
+            'inline-flex h-7 min-w-0 items-center gap-1 rounded-md bg-primary px-2.5 text-xs font-semibold text-on-primary shadow-sm shadow-primary/30 transition-all hover:shadow-primary/60 hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none',
             applyError !== undefined && 'ring-2 ring-danger/60'
           )}
         >
+          <ButtonIcon className="size-3.5 shrink-0" />
           <span className="truncate">{buttonLabel}</span>
         </button>
       </Tooltip>
