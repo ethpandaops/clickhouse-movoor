@@ -1,0 +1,174 @@
+logging: info
+metricsAddr: ":9090"
+healthCheckAddr: ":8081"
+
+clickhouse:
+  queryTimeout: 30s
+  dialTimeout: 5s
+
+  nodes:
+    - name: clickhouse-shard1-replica1
+      shard: shard1
+      replica: replica1
+      dsn: "clickhouse://default@127.0.0.1:9000/default"
+
+    - name: clickhouse-shard1-replica2
+      shard: shard1
+      replica: replica2
+      dsn: "clickhouse://default@127.0.0.1:9001/default"
+
+    - name: clickhouse-shard2-replica1
+      shard: shard2
+      replica: replica1
+      dsn: "clickhouse://default@127.0.0.1:9002/default"
+
+    - name: clickhouse-shard2-replica2
+      shard: shard2
+      replica: replica2
+      dsn: "clickhouse://default@127.0.0.1:9003/default"
+
+tiering:
+  mode: enforce
+  interval: 1s
+  maxConcurrentPartitions: 5
+  safety:
+    maxMovesPerCycle: 2
+    maxBytesInFlight: 500GiB
+    maxBytesPerDay: 2TiB
+    diffBreaker:
+      maxPartitions: 100
+      maxTableFraction: 1.0
+  defaults:
+    targetDisk: s3_cache
+    quietFor: 1s
+    tierFrozenAfter: 12h # long enough that live-group lag semantics survive a dev session
+    optimizeToParts: 1
+    optimizeSkipAboveBytes: 300GiB
+    optimizeStallAfter: 2m
+    resplit:
+      strategy: remerge
+      quietFor: 1s
+      fragmentAbovePartCount: 6
+
+watches:
+  - database: movoor_dev
+    table: events_local
+    tier:
+      age:
+        basis: frontier
+        field: block_number
+        keepLast: 250
+
+  - database: movoor_dev
+    table: test_generic_network_month_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+      resplit:
+        strategy: append # exercises the append path; the global default is remerge
+
+  - database: movoor_dev
+    table: test_generic_chain_month_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+      optimizeOn: cold # exercises cold-side consolidation (HDD-style cold tier); default is hot
+
+  - database: movoor_dev
+    table: test_generic_network_block_bucket_local
+    tier:
+      age:
+        basis: frontier
+        field: block_number
+        keepLast: 250
+
+  - database: movoor_dev
+    table: test_generic_block_bucket_local
+    tier:
+      age:
+        basis: frontier
+        field: block_number
+        keepLast: 250
+
+  - database: movoor_dev
+    table: test_generic_start_block_bucket_local
+    tier:
+      age:
+        basis: frontier
+        field: start_block_number
+        keepLast: 250
+
+  - database: movoor_dev
+    table: test_generic_month_start_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+
+  - database: movoor_dev
+    table: test_generic_month_number_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+      tierFrozenAfter: 1h # dead-group escape demo table: everything here frees up 1h after seeding
+
+  - database: movoor_dev
+    table: test_generic_network_only_local
+
+  - database: movoor_dev
+    table: test_generic_bucket_only_local
+
+  - database: movoor_dev
+    table: test_generic_bucket_block_bucket_local
+    tier:
+      age:
+        basis: frontier
+        field: block_number
+        keepLast: 250
+
+  - database: movoor_dev
+    table: test_generic_bucket_month_start_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+
+  - database: movoor_dev
+    table: test_generic_bucket_month_number_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+
+  - database: movoor_dev
+    table: test_generic_tuple_version_local
+
+  - database: movoor_dev
+    table: test_generic_unpartitioned_replacing_local
+
+  - database: movoor_dev
+    table: test_generic_plain_month_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+      skipOptimize: true
+
+  # Partitioned directly on a bare Date column (PARTITION BY LogDate) —
+  # no time function; the sole partition column is the age element.
+  - database: movoor_dev
+    table: test_generic_logdate_local
+    tier:
+      age:
+        basis: partitionTime
+        olderThan: 35d
+
+  - database: movoor_dev
+    table: test_generic_unpartitioned_plain_local
+
+frontend:
+  enabled: true
+  addr: ":8080"

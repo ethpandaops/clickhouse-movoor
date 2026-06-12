@@ -1,0 +1,1 @@
+export { InlineNotice } from './InlineNotice';

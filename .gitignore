@@ -16,7 +16,6 @@ coverage.out
 
 # Generated
 api/generated/
-web/src/api/
 
 # IDE
 .idea/

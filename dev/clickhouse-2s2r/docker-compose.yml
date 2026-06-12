@@ -1,0 +1,241 @@
+name: clickhouse-movoor-2s2r
+
+x-keeper-healthcheck: &keeper_healthcheck
+  test:
+    - CMD-SHELL
+    - clickhouse-keeper-client --host 127.0.0.1 --port 9181 --query ruok | grep -q imok
+  interval: 2s
+  timeout: 2s
+  retries: 30
+  start_period: 2s
+
+services:
+  minio:
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z}
+    hostname: minio
+    command:
+      - server
+      - /data
+      - --console-address
+      - :9001
+    environment:
+      MINIO_ROOT_USER: movoor
+      MINIO_ROOT_PASSWORD: movoorsecret
+    ports:
+      - "9010:9000"
+      - "9011:9001"
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: ${MINIO_MC_IMAGE:-quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z}
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        until mc alias set local http://minio:9000 movoor movoorsecret; do sleep 1; done
+        mc mb --ignore-existing local/movoor-clickhouse
+    restart: "no"
+
+  keeper1:
+    image: ${CLICKHOUSE_KEEPER_IMAGE:-clickhouse/clickhouse-keeper:26.2.5.45}
+    hostname: keeper1
+    healthcheck: *keeper_healthcheck
+    entrypoint:
+      - clickhouse-keeper
+      - --config-file=/etc/clickhouse-keeper/keeper_config.xml
+    volumes:
+      - ./keeper/keeper1.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - keeper1-data:/var/lib/clickhouse-keeper
+
+  keeper2:
+    image: ${CLICKHOUSE_KEEPER_IMAGE:-clickhouse/clickhouse-keeper:26.2.5.45}
+    hostname: keeper2
+    healthcheck: *keeper_healthcheck
+    entrypoint:
+      - clickhouse-keeper
+      - --config-file=/etc/clickhouse-keeper/keeper_config.xml
+    volumes:
+      - ./keeper/keeper2.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - keeper2-data:/var/lib/clickhouse-keeper
+
+  keeper3:
+    image: ${CLICKHOUSE_KEEPER_IMAGE:-clickhouse/clickhouse-keeper:26.2.5.45}
+    hostname: keeper3
+    healthcheck: *keeper_healthcheck
+    entrypoint:
+      - clickhouse-keeper
+      - --config-file=/etc/clickhouse-keeper/keeper_config.xml
+    volumes:
+      - ./keeper/keeper3.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - keeper3-data:/var/lib/clickhouse-keeper
+
+  clickhouse-shard1-replica1:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.2.5.45}
+    hostname: clickhouse-shard1-replica1
+    depends_on:
+      keeper1:
+        condition: service_healthy
+      keeper2:
+        condition: service_healthy
+      keeper3:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      CLICKHOUSE_SHARD: shard1
+      CLICKHOUSE_REPLICA: replica1
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - clickhouse-shard1-replica1-data:/var/lib/clickhouse
+      - clickhouse-shard1-replica1-logs:/var/log/clickhouse-server
+
+  clickhouse-shard1-replica2:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.2.5.45}
+    hostname: clickhouse-shard1-replica2
+    depends_on:
+      keeper1:
+        condition: service_healthy
+      keeper2:
+        condition: service_healthy
+      keeper3:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      CLICKHOUSE_SHARD: shard1
+      CLICKHOUSE_REPLICA: replica2
+    ports:
+      - "8124:8123"
+      - "9001:9000"
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - clickhouse-shard1-replica2-data:/var/lib/clickhouse
+      - clickhouse-shard1-replica2-logs:/var/log/clickhouse-server
+
+  clickhouse-shard2-replica1:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.2.5.45}
+    hostname: clickhouse-shard2-replica1
+    depends_on:
+      keeper1:
+        condition: service_healthy
+      keeper2:
+        condition: service_healthy
+      keeper3:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      CLICKHOUSE_SHARD: shard2
+      CLICKHOUSE_REPLICA: replica1
+    ports:
+      - "8125:8123"
+      - "9002:9000"
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - clickhouse-shard2-replica1-data:/var/lib/clickhouse
+      - clickhouse-shard2-replica1-logs:/var/log/clickhouse-server
+
+  clickhouse-shard2-replica2:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.2.5.45}
+    hostname: clickhouse-shard2-replica2
+    depends_on:
+      keeper1:
+        condition: service_healthy
+      keeper2:
+        condition: service_healthy
+      keeper3:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      CLICKHOUSE_SHARD: shard2
+      CLICKHOUSE_REPLICA: replica2
+    ports:
+      - "8126:8123"
+      - "9003:9000"
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - clickhouse-shard2-replica2-data:/var/lib/clickhouse
+      - clickhouse-shard2-replica2-logs:/var/log/clickhouse-server
+
+  bootstrap:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.2.5.45}
+    depends_on:
+      - clickhouse-shard1-replica1
+      - clickhouse-shard1-replica2
+      - clickhouse-shard2-replica1
+      - clickhouse-shard2-replica2
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        until clickhouse-client --host clickhouse-shard1-replica1 --query "SELECT 1"; do sleep 1; done
+        until clickhouse-client --host clickhouse-shard1-replica2 --query "SELECT 1"; do sleep 1; done
+        until clickhouse-client --host clickhouse-shard2-replica1 --query "SELECT 1"; do sleep 1; done
+        until clickhouse-client --host clickhouse-shard2-replica2 --query "SELECT 1"; do sleep 1; done
+        for sql in /docker-entrypoint-initdb.d/*.sql; do
+          echo "running $${sql}"
+          clickhouse-client --host clickhouse-shard1-replica1 --multiquery < "$${sql}"
+        done
+        for script in /docker-entrypoint-initdb.d/*.sh; do
+          [ -e "$${script}" ] || continue
+          echo "running $${script}"
+          sh "$${script}"
+        done
+    volumes:
+      - ./initdb.d:/docker-entrypoint-initdb.d:ro
+    restart: "no"
+
+  verify:
+    image: ${CLICKHOUSE_IMAGE:-clickhouse/clickhouse-server:26.2.5.45}
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
+    environment:
+      CLICKHOUSE_HOST: clickhouse-shard1-replica1
+      CLICKHOUSE_VERSION: "26.2.5.45"
+    entrypoint:
+      - /bin/sh
+      - -ec
+    command:
+      - |
+        sh /verify/verify.sh
+        touch /tmp/movoor-verified
+        tail -f /dev/null
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - test -f /tmp/movoor-verified
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 1s
+    volumes:
+      - ./verify:/verify:ro
+    restart: "no"
+
+volumes:
+  minio-data:
+  keeper1-data:
+  keeper2-data:
+  keeper3-data:
+  clickhouse-shard1-replica1-data:
+  clickhouse-shard1-replica1-logs:
+  clickhouse-shard1-replica2-data:
+  clickhouse-shard1-replica2-logs:
+  clickhouse-shard2-replica1-data:
+  clickhouse-shard2-replica1-logs:
+  clickhouse-shard2-replica2-data:
+  clickhouse-shard2-replica2-logs:

@@ -1,0 +1,33 @@
+<clickhouse>
+    <storage_configuration>
+        <disks>
+            <s3>
+                <type>s3</type>
+                <endpoint>http://minio:9000/movoor-clickhouse/clickhouse/</endpoint>
+                <access_key_id>movoor</access_key_id>
+                <secret_access_key>movoorsecret</secret_access_key>
+                <metadata_path>/var/lib/clickhouse/disks/s3/</metadata_path>
+            </s3>
+            <s3_cache>
+                <type>cache</type>
+                <disk>s3</disk>
+                <path>/var/lib/clickhouse/disks/s3_cache/</path>
+                <max_size>1Gi</max_size>
+                <cache_on_write_operations>true</cache_on_write_operations>
+            </s3_cache>
+        </disks>
+
+        <policies>
+            <movoor_tiered>
+                <volumes>
+                    <hot>
+                        <disk>default</disk>
+                    </hot>
+                    <cold>
+                        <disk>s3_cache</disk>
+                    </cold>
+                </volumes>
+            </movoor_tiered>
+        </policies>
+    </storage_configuration>
+</clickhouse>

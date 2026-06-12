@@ -17,9 +17,6 @@ dist-ssr
 /build/stats.html
 storybook-static
 
-# Generated API client
-src/api
-
 # Environment variables
 .env
 .env.local

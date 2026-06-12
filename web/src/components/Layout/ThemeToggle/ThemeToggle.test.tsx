@@ -6,8 +6,6 @@ const themeMocks = vi.hoisted(() => ({
   mode: 'light' as 'light' | 'dark' | 'system',
   theme: 'light' as 'light' | 'dark',
   setThemeMode: vi.fn(),
-  setTheme: vi.fn(),
-  clearTheme: vi.fn(),
 }));
 
 vi.mock('@/hooks/useTheme', () => ({
@@ -15,8 +13,6 @@ vi.mock('@/hooks/useTheme', () => ({
     mode: themeMocks.mode,
     theme: themeMocks.theme,
     setThemeMode: themeMocks.setThemeMode,
-    setTheme: themeMocks.setTheme,
-    clearTheme: themeMocks.clearTheme,
   }),
 }));
 

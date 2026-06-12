@@ -18,21 +18,19 @@ export const REFETCH_INTERVALS = {
 
 interface ClientConfig {
   baseUrl?: string;
-  fetch?: typeof fetch;
 }
 
-export const createClientConfig = <T extends ClientConfig>(
-  config: T
-): T & { baseUrl: string; fetch: typeof fetch } => ({
+const resolveBaseUrl = (serverBaseUrl?: string): string => {
+  const base = serverBaseUrl || PATH_PREFIX;
+
+  if (/^https?:\/\//.test(base)) {
+    return base;
+  }
+
+  return `${BASE_URL}${base}`;
+};
+
+export const createClientConfig = <T extends ClientConfig>(config: T): T & { baseUrl: string } => ({
   ...config,
-  baseUrl: BASE_URL,
-  fetch: async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const response = await globalThis.fetch(input, { ...init, credentials: 'include' });
-
-    if (response.status === 401) {
-      window.dispatchEvent(new CustomEvent('movoor:auth-expired'));
-    }
-
-    return response;
-  },
+  baseUrl: resolveBaseUrl(config.baseUrl),
 });

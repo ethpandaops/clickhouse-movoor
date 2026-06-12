@@ -1,0 +1,240 @@
+# clickhouse-movoor configuration.
+#
+# Durations in the tiering and watches sections use ms, s, m, h, d, w, or y,
+# and can be compound, for example 1h30m. The clickhouse timeouts are standard
+# Go durations (ns, us, ms, s, m, h) and do not accept d, w, or y. Byte sizes
+# use base-2 suffixes: KiB, MiB, GiB, TiB, or PiB.
+
+logging: info # debug, info, warn/warning, or error
+metricsAddr: ":9090"
+healthCheckAddr: ":8081"
+
+# Optional OTLP/gRPC tracing. Leave endpoint empty or omit this block to keep
+# tracing disabled. sampleRatio is in [0, 1]; explicit 0 records no samples.
+# tracing:
+#   endpoint: "otel-collector:4317"
+#   sampleRatio: 1.0
+
+clickhouse:
+  # Standard Go durations; d/w/y suffixes are not accepted here.
+  queryTimeout: 30s
+  dialTimeout: 5s
+
+  # Each entry is one physical ClickHouse node. Do not use comma-separated
+  # failover DSNs or load-balanced addresses here; movoor needs node identity.
+  # DSNs are environment-expanded, so ${CLICKHOUSE_PASSWORD} is supported.
+  nodes:
+    - name: something-0-0
+      shard: "0"
+      replica: "0"
+      dsn: "clickhouse://default:${CLICKHOUSE_PASSWORD}@node1:9000/default"
+
+    - name: something-0-1
+      shard: "0"
+      replica: "1"
+      dsn: "clickhouse://default:${CLICKHOUSE_PASSWORD}@node2:9000/default"
+
+    - name: something-1-0
+      shard: "1"
+      replica: "0"
+      dsn: "clickhouse://default:${CLICKHOUSE_PASSWORD}@node3:9000/default"
+
+    - name: something-1-1
+      shard: "1"
+      replica: "1"
+      dsn: "clickhouse://default:${CLICKHOUSE_PASSWORD}@node4:9000/default"
+
+tiering:
+  # off observes only, plan computes decisions without ALTERs, enforce applies
+  # movement/optimization decisions.
+  mode: plan
+
+  # Pause between reconcile cycles. Every node/watch pair runs its own
+  # observe -> decide -> act loop and sleeps this long between cycles; failed
+  # cycles back off further, and replicas of the same shard are phase-offset
+  # within the interval so they never act simultaneously. Together with
+  # safety.maxMovesPerCycle this paces how quickly movement is admitted.
+  interval: 5m
+
+  # Per-node cap on concurrently executing partition legs.
+  maxConcurrentPartitions: 1
+
+  # Per-node cap on concurrent table observations. Every tiered watch runs its
+  # own reconcile loop; this gate keeps a large watch list from firing all of
+  # its multi-query observation pipelines at a node simultaneously (most
+  # visible at startup, where an unbounded herd makes every observation blow
+  # the shared clickhouse.queryTimeout together).
+  maxConcurrentObservations: 4
+
+  safety:
+    maxMovesPerCycle: 4
+    maxBytesInFlight: 500GiB
+    maxBytesPerDay: 2TiB
+
+    # Set >0 to let an enforcing controller apply only this many successful
+    # actions before pausing itself. Omit or keep 0 for no automatic pause.
+    pauseAfterActions: 0
+
+    # Stops a cycle when a table produces too many candidate partitions, which
+    # usually means a bad rule or unexpected table shape.
+    diffBreaker:
+      maxPartitions: 50
+      maxTableFraction: 0.5
+
+      # Temporary override for planned bulk movements. expires must be a future
+      # timestamp when the config is loaded.
+      # override:
+      #   maxPartitions: 500
+      #   maxTableFraction: 1.0
+      #   expires: "2030-01-01T00:00:00Z"
+
+  # Defaults copied into every watch that has a tier block. A watch without a
+  # tier block remains observe-only.
+  defaults:
+    # mode: plan # optional per-table default; otherwise tiering.mode is used
+    # Replace this with the ClickHouse disk name to move cold partitions onto.
+    # Omitting targetDisk entirely silently defaults it to s3_cache.
+    targetDisk: cold_disk
+
+    # Optional explicit hot volume. If omitted, movoor infers the volume before
+    # the target disk in the table's storage policy.
+    # hotVolume: hot
+
+    # How long a partition must be free of new inserts before movoor treats it
+    # as sealed and eligible for optimize/move. Prevents moving partitions that
+    # are still being written, which would split them across disks. sealedSignal
+    # picks the insert evidence: partLog uses part_log insert events and holds
+    # the partition when they are unavailable, modificationTime uses the parts'
+    # last-physical-change clock (merges and moves reset it too, so each action
+    # waits out a fresh window), and auto prefers partLog and degrades to
+    # modificationTime when part_log coverage is missing.
+    quietFor: 24h
+    sealedSignal: auto # auto, partLog, or modificationTime
+    # Dead-group escape: age rules hold the newest partitions of a group until
+    # ingest provably moves past them (frontier advance or newer-partition
+    # inserts), which would park a group that stopped receiving data on the hot
+    # disk forever. Once every partition in the group has been insert-free for
+    # this long, the group counts as dead and its partitions tier anyway.
+    tierFrozenAfter: 30d # must be >= quietFor
+
+    optimizeToParts: 1
+    skipOptimize: false
+    optimizeOn: hot # hot or cold; cold is for target disks where merges are acceptable
+    optimizeSkipAboveBytes: 300GiB
+    optimizeStallAfter: 30m
+
+    resplit:
+      # remerge consolidates split partitions, append moves hot strays to the
+      # target disk, auto appends below the fragment ceiling and remerges above
+      # it, and hold leaves split partitions untouched.
+      strategy: remerge # auto, remerge, append, or hold
+      # Insert-quiet window required before repairing a split partition; must
+      # be >= the tier block's quietFor.
+      quietFor: 7d
+      fragmentAbovePartCount: 6
+
+    # Optional shared age rule for all tiered watches. Most deployments keep
+    # age rules per watch because table partitioning differs.
+    # age:
+    #   basis: partitionTime
+    #   olderThan: 35d
+
+watches:
+  # No tier block means observe-only: movoor collects state and serves it in the
+  # UI/API, but does not plan or apply movement for this table.
+  - database: default
+    table: something
+
+  # Partition-time age: tier partitions whose time bucket ended more than
+  # olderThan ago.
+  # - database: default
+  #   table: events_local
+  #   tier:
+  #     age:
+  #       basis: partitionTime
+  #       olderThan: 35d
+
+  # Tables partitioned directly on a bare Date column (PARTITION BY LogDate)
+  # need no time function: a single-column key makes the column the age
+  # element automatically; multi-column keys name it via age.field.
+  # - database: default
+  #   table: logs_local
+  #   tier:
+  #     age:
+  #       basis: partitionTime
+  #       olderThan: 35d
+  #       # field: LogDate # only needed when the key has group columns too
+
+  # Frontier age: tier numeric buckets that are behind the current per-group
+  # frontier by keepLast. field must be the frontier column used by the table's
+  # partition layout, for example block_number or start_block_number.
+  # - database: default
+  #   table: blocks_local
+  #   tier:
+  #     age:
+  #       basis: frontier
+  #       field: block_number
+  #       keepLast: 250
+
+  # Per-watch tier blocks can override any field from tiering.defaults. Use this
+  # for table-specific mode, target-disk behavior, resplit behavior, and partition
+  # exclusions.
+  # - database: default
+  #   table: monthly_local
+  #   tier:
+  #     mode: enforce
+  #     targetDisk: cold_disk
+  #     hotVolume: hot
+  #     quietFor: 24h
+  #     sealedSignal: auto
+  #     tierFrozenAfter: 30d
+  #     optimizeToParts: 1
+  #     skipOptimize: false
+  #     optimizeOn: hot
+  #     optimizeSkipAboveBytes: 300GiB
+  #     optimizeStallAfter: 30m
+  #     resplit:
+  #       strategy: remerge
+  #       quietFor: 7d
+  #       fragmentAbovePartCount: 6
+  #     age:
+  #       basis: partitionTime
+  #       olderThan: 35d
+  #     excludePartitions:
+  #       - "('mainnet',202401)"
+
+  # Append split partitions instead of round-tripping them through the hot
+  # volume for a remerge.
+  # - database: default
+  #   table: append_only_monthly_local
+  #   tier:
+  #     age:
+  #       basis: partitionTime
+  #       olderThan: 35d
+  #     resplit:
+  #       strategy: append
+
+  # Cold-side optimize is intended for target disks where FINAL merges are acceptable.
+  # Do not combine optimizeOn: cold with skipOptimize: true.
+  # - database: default
+  #   table: hdd_cold_monthly_local
+  #   tier:
+  #     age:
+  #       basis: partitionTime
+  #       olderThan: 35d
+  #     optimizeOn: cold
+
+  # Skip optimization entirely and only move eligible partitions.
+  # - database: default
+  #   table: plain_monthly_local
+  #   tier:
+  #     age:
+  #       basis: partitionTime
+  #       olderThan: 35d
+  #     skipOptimize: true
+
+frontend:
+  # Defaults to true when omitted. The same server serves the embedded UI and
+  # /api/v1.
+  enabled: true
+  addr: ":8080"

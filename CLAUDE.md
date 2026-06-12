@@ -1,11 +1,8 @@
 # clickhouse-movoor
 
-A long-running controller that continuously tiers cold ClickHouse partitions
-from local disk to object storage (S3), keeping recent ("hot") data local. It
-runs as one instance per node, reconciling that node's own local ClickHouse.
-
-> **Status:** early stage. The scaffolding (Go service, operator web UI, CI,
-> release) exists; the tiering logic is being built out.
+A long-running controller that observes ClickHouse MergeTree partitions across
+configured physical nodes and moves cold partitions onto a configured
+ClickHouse target disk.
 
 ## Architecture
 
@@ -30,8 +27,11 @@ New subsystems get their own package under `internal/` and are started from
   Linting is governed by `.golangci.yml`.
 - Web: see `web/CLAUDE.md`. Colors must use the semantic tokens in
   `web/src/index.css` (enforced by custom ESLint rules).
-- The OpenAPI spec in `api/openapi.yaml` is the source of truth for the typed
-  web API client (`pnpm --dir web generate:api`).
+- The OpenAPI spec in `api/openapi.yaml` is the source of truth for both the
+  ogen-generated Go server (`api/rest`, regenerated via `go generate ./api`)
+  and the typed web API client (`pnpm --dir web generate:api`). `make generate`
+  runs both. Handlers implement the generated `rest.Handler` interface in
+  `internal/server/handler.go`; never edit `api/rest` by hand.
 
 ## Commands
 

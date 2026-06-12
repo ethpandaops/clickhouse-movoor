@@ -6,7 +6,7 @@ import { ThemeContext, type ThemeContextValue } from '@/contexts/ThemeContext';
  *
  * Must be used within a ThemeProvider.
  *
- * @returns The current theme context value with mode, theme, setThemeMode, setTheme, and clearTheme
+ * @returns The current theme context value with mode, resolved theme, and setThemeMode
  * @throws Error if used outside of ThemeProvider
  */
 export function useTheme(): ThemeContextValue {

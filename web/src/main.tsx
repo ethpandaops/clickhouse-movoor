@@ -20,14 +20,6 @@ declare module '@tanstack/react-router' {
   }
 }
 
-// Register the service worker at boot. Idempotent and non-blocking — a broken
-// SW must not block first paint.
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(err => {
-    console.warn('service worker registration failed', err);
-  });
-}
-
 const rootElement = document.getElementById('root');
 if (rootElement) {
   createRoot(rootElement).render(

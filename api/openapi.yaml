@@ -2,7 +2,18 @@ openapi: 3.1.0
 info:
   title: clickhouse-movoor API
   version: 0.1.0
-  description: Skeleton JSON API for clickhouse-movoor.
+  description: |
+    Operator API for clickhouse-movoor.
+
+    Movoor is configured with every ClickHouse node endpoint and fans out to
+    those nodes for cluster-state reads. Those endpoints return request-time
+    collection with per-node evidence preserved. Tiering endpoints expose the
+    controller's cached plan, runtime controls, and action history. The API
+    does not expose a ClickHouse cluster-mode scope parameter.
+
+    Exact ClickHouse integer and decimal values are returned as named string
+    scalar types to avoid precision loss. Movoor-computed elapsed seconds,
+    percentages, and progress ratios are JSON numbers.
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -11,7 +22,19 @@ servers:
     description: Default API base path served by the binary.
 tags:
   - name: system
-    description: System and liveness endpoints.
+    description: System liveness and readiness endpoints.
+  - name: nodes
+    description: Configured ClickHouse nodes and request-time node health.
+  - name: storage
+    description: Disk, storage policy, and target-disk configuration evidence.
+  - name: tables
+    description: Watched table, schema, partition, part, and detached part state.
+  - name: operations
+    description: ClickHouse work currently relevant to partition movement.
+  - name: conditions
+    description: Flattened operator triage conditions across nodes and tables.
+  - name: tiering
+    description: Cached tiering plan, runtime controls, and action history.
 paths:
   /healthz:
     get:
@@ -28,34 +51,2987 @@ paths:
               schema:
                 $ref: "#/components/schemas/Health"
         "400":
-          description: Malformed request.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Error"
+          $ref: "#/components/responses/BadRequest"
         "500":
-          description: Service is unhealthy.
+          $ref: "#/components/responses/InternalServerError"
+
+  /nodes:
+    get:
+      operationId: listNodes
+      summary: List configured nodes
+      description: |
+        Returns configured ClickHouse nodes plus request-time reachability and
+        coarse replication health. This endpoint is intentionally unpaginated:
+        the collection is bounded by the configured node list.
+      tags:
+        - nodes
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+      responses:
+        "200":
+          description: Nodes collected from the configured node list.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/NodesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /storage/disks:
+    get:
+      operationId: listStorageDisks
+      summary: List disks
+      description: |
+        Returns disk inventory across configured nodes. Unknown or unbounded
+        remote capacity is represented with capacityKnown=false and null capacity
+        fields rather than ClickHouse sentinel values.
+      tags:
+        - storage
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DiskQuery"
+        - $ref: "#/components/parameters/DiskTypeQuery"
+        - $ref: "#/components/parameters/BrokenQuery"
+      responses:
+        "200":
+          description: Disk inventory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StorageDisksResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tables:
+    get:
+      operationId: listTables
+      summary: List watched tables
+      description: |
+        Returns table inventory normalized across configured nodes. Missing
+        database or table query filters produce an empty result set, not 404.
+      tags:
+        - tables
+      parameters:
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/EngineQuery"
+        - $ref: "#/components/parameters/StoragePolicyQuery"
+        - $ref: "#/components/parameters/HasPartitionsQuery"
+        - $ref: "#/components/parameters/HasConditionsQuery"
+      responses:
+        "200":
+          description: Watched table inventory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TablesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tables/{database}/{table}:
+    get:
+      operationId: getTable
+      summary: Get table detail
+      description: Returns detailed table state, including per-node table metadata.
+      tags:
+        - tables
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+      responses:
+        "200":
+          description: Table detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tables/{database}/{table}/columns:
+    get:
+      operationId: listTableColumns
+      summary: List table columns
+      description: Returns schema detail per node because schema drift can occur during failed or partial DDL.
+      tags:
+        - tables
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/ColumnKindQuery"
+        - $ref: "#/components/parameters/NameQuery"
+      responses:
+        "200":
+          description: Column definitions by node.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableColumnsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tables/{database}/{table}/partitions:
+    get:
+      operationId: listTablePartitions
+      summary: List table partitions
+      description: |
+        Returns logical partition placement and active operation overlays. The
+        partitionId field is ClickHouse system.parts.partition_id verbatim and
+        is unique only within the database/table pair.
+      tags:
+        - tables
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/PlacementQuery"
+        - $ref: "#/components/parameters/OperationOverlayQuery"
+        - $ref: "#/components/parameters/DiskQuery"
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/ShardQuery"
+        - $ref: "#/components/parameters/ReplicaQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+        - $ref: "#/components/parameters/HasConditionsQuery"
+      responses:
+        "200":
+          description: Partition placement state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TablePartitionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tables/{database}/{table}/parts:
+    get:
+      operationId: listTableParts
+      summary: List active parts
+      description: Returns physical parts from system.parts, per node.
+      tags:
+        - tables
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/ShardQuery"
+        - $ref: "#/components/parameters/ReplicaQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+        - $ref: "#/components/parameters/PartNameQuery"
+        - $ref: "#/components/parameters/DiskQuery"
+        - $ref: "#/components/parameters/ActiveQuery"
+        - $ref: "#/components/parameters/MinBytesOnDiskQuery"
+        - $ref: "#/components/parameters/MaxBytesOnDiskQuery"
+      responses:
+        "200":
+          description: Active part inventory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TablePartsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tables/{database}/{table}/detached-parts:
+    get:
+      operationId: listDetachedParts
+      summary: List detached parts
+      description: Returns detached parts from system.detached_parts, per node.
+      tags:
+        - tables
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/ShardQuery"
+        - $ref: "#/components/parameters/ReplicaQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+        - $ref: "#/components/parameters/PartNameQuery"
+        - $ref: "#/components/parameters/DiskQuery"
+        - $ref: "#/components/parameters/ReasonQuery"
+      responses:
+        "200":
+          description: Detached part inventory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetachedPartsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /operations:
+    get:
+      operationId: listOperations
+      summary: List active operations
+      description: Returns current ClickHouse work in flight that matters to movoor.
+      tags:
+        - operations
+      parameters:
+        - $ref: "#/components/parameters/OperationKindQuery"
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+      responses:
+        "200":
+          description: Active operations.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OperationsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /operations/mutations:
+    get:
+      operationId: listMutations
+      summary: List mutations
+      description: Returns detailed unfinished and recent mutations from system.mutations, per node.
+      tags:
+        - operations
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/MutationIdQuery"
+        - $ref: "#/components/parameters/DoneQuery"
+        - $ref: "#/components/parameters/FailedQuery"
+      responses:
+        "200":
+          description: Mutation details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MutationsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /operations/replication-queue:
+    get:
+      operationId: listReplicationQueue
+      summary: List replication queue items
+      description: Returns raw replication queue evidence from system.replication_queue, per node.
+      tags:
+        - operations
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/QueueTypeQuery"
+        - $ref: "#/components/parameters/CurrentlyExecutingQuery"
+        - $ref: "#/components/parameters/HasExceptionQuery"
+      responses:
+        "200":
+          description: Replication queue details.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReplicationQueueResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /part-events:
+    get:
+      operationId: listPartEvents
+      summary: List recent part events
+      description: |
+        Returns recent part history from system.part_log when enabled. The
+        scan is bounded to the requested from/to window (defaulting to the
+        last 7 days) and to the newest 1000 events per table per node. If a
+        node is reachable but part_log is unavailable, return partial data
+        with a capability warning.
+      tags:
+        - operations
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+        - $ref: "#/components/parameters/PartNameQuery"
+        - $ref: "#/components/parameters/EventTypeQuery"
+        - $ref: "#/components/parameters/FromQuery"
+        - $ref: "#/components/parameters/ToQuery"
+      responses:
+        "200":
+          description: Recent part events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PartEventsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /conditions:
+    get:
+      operationId: listConditions
+      summary: List conditions
+      description: |
+        Returns a flattened, unpaginated triage list. The list can grow with the
+        observed cluster state, but the intended UI workload is bounded by the
+        configured tables and nodes.
+      tags:
+        - conditions
+      parameters:
+        - $ref: "#/components/parameters/SeverityQuery"
+        - $ref: "#/components/parameters/CodeQuery"
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+      responses:
+        "200":
+          description: Flattened conditions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConditionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/plan:
+    get:
+      operationId: getTieringPlan
+      summary: Get tiering plan
+      description: |
+        Returns the controller's cached per-node table snapshots. Unlike the
+        cluster explorer endpoints, this endpoint does not query ClickHouse on
+        demand; every table carries the reconcile timestamp, generation, and
+        any last observation error for that cached plan.
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/TieringStatusQuery"
+        - $ref: "#/components/parameters/TieringDecisionQuery"
+      responses:
+        "200":
+          description: Cached tiering plan snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringPlanResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/status:
+    get:
+      operationId: getTieringStatus
+      summary: Get tiering controller status
+      description: Returns runtime dispatch state, rate limits, and in-flight tiering legs.
+      tags:
+        - tiering
+      responses:
+        "200":
+          description: Current tiering runtime status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/history:
+    get:
+      operationId: getTieringHistory
+      summary: List tiering action history
+      description: Returns the in-memory action ring buffer. Structured logs are the durable history.
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/NodeIdQuery"
+        - $ref: "#/components/parameters/DatabaseQuery"
+        - $ref: "#/components/parameters/TableQuery"
+        - $ref: "#/components/parameters/PartitionIdQuery"
+      responses:
+        "200":
+          description: Recent tiering action history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringHistoryResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/pause:
+    post:
+      operationId: pauseTiering
+      summary: Pause tiering dispatch
+      description: Stops dispatching new tiering actions. Existing in-flight work is allowed to drain.
+      tags:
+        - tiering
+      responses:
+        "202":
+          description: Pause accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/resume:
+    post:
+      operationId: resumeTiering
+      summary: Resume tiering dispatch
+      description: Allows the controller to dispatch new tiering actions again.
+      tags:
+        - tiering
+      responses:
+        "202":
+          description: Resume accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/tables/{database}/{table}/partitions/{partitionId}/apply:
+    post:
+      operationId: applyTieringPartition
+      summary: Apply one tiering decision
+      description: |
+        Starts one supervised executor attempt for the partition's current
+        actionable verdict. The request must include nodeId and the stateToken
+        observed from /tiering/plan; stale tokens return 409. The leg runs
+        detached from the request: the 202 response acknowledges admission with
+        outcome "started", the leg is visible in /tiering/status inFlight until
+        it converges, and its completion lands in /tiering/history.
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/PartitionIdPath"
+        - $ref: "#/components/parameters/NodeIdQueryRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TieringApplyRequest"
+      responses:
+        "202":
+          description: Apply admitted; the leg runs in the background.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringApplyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /tiering/tables/{database}/{table}/partitions/{partitionId}/retry:
+    post:
+      operationId: retryTieringPartition
+      summary: Retry one stalled tiering partition
+      description: |
+        Re-runs one supervised executor attempt for a stalled partition. The
+        request must include nodeId and the current stateToken from
+        /tiering/plan; stale tokens return 409. Like apply, the leg runs
+        detached from the request and the 202 acknowledges admission with
+        outcome "started".
+      tags:
+        - tiering
+      parameters:
+        - $ref: "#/components/parameters/DatabasePath"
+        - $ref: "#/components/parameters/TablePath"
+        - $ref: "#/components/parameters/PartitionIdPath"
+        - $ref: "#/components/parameters/NodeIdQueryRequired"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TieringApplyRequest"
+      responses:
+        "202":
+          description: Retry admitted; the leg runs in the background.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TieringApplyResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
 components:
+  parameters:
+    ActiveQuery:
+      name: active
+      in: query
+      description: Filter physical parts by active flag.
+      schema:
+        type: boolean
+    BrokenQuery:
+      name: broken
+      in: query
+      description: Filter disks by broken state.
+      schema:
+        type: boolean
+    CodeQuery:
+      name: code
+      in: query
+      description: |
+        Filter by open condition code. Unknown values are valid and return an
+        empty result set when no matching condition exists.
+      schema:
+        type: string
+        examples:
+          - replica_disk_mismatch
+    ColumnKindQuery:
+      name: kind
+      in: query
+      description: |
+        Filter columns by ClickHouse column kind. Known values include ordinary,
+        materialized, alias, default, and ephemeral. This is an open string.
+      schema:
+        type: string
+        examples:
+          - ordinary
+    CurrentlyExecutingQuery:
+      name: currentlyExecuting
+      in: query
+      description: Filter replication queue items by execution state.
+      schema:
+        type: boolean
+    DatabasePath:
+      name: database
+      in: path
+      required: true
+      description: ClickHouse database name.
+      schema:
+        type: string
+        examples:
+          - movoor_dev
+    DatabaseQuery:
+      name: database
+      in: query
+      description: Filter by ClickHouse database name.
+      schema:
+        type: string
+        examples:
+          - movoor_dev
+    DiskQuery:
+      name: disk
+      in: query
+      description: Filter by ClickHouse disk name.
+      schema:
+        type: string
+        examples:
+          - cold_disk
+    DiskTypeQuery:
+      name: type
+      in: query
+      description: Filter by ClickHouse disk type. This is an open ClickHouse string.
+      schema:
+        type: string
+        examples:
+          - ObjectStorage
+    DoneQuery:
+      name: done
+      in: query
+      description: Filter mutations by isDone.
+      schema:
+        type: boolean
+    EngineQuery:
+      name: engine
+      in: query
+      description: Filter tables by engine.
+      schema:
+        type: string
+        examples:
+          - ReplicatedReplacingMergeTree
+    EventTypeQuery:
+      name: eventType
+      in: query
+      description: |
+        Filter by open ClickHouse part_log event type. Known values include
+        NewPart, MergeParts, DownloadPart, RemovePart, and MovePart. Unknown
+        values are valid and return an empty result set when no event exists.
+      schema:
+        type: string
+        examples:
+          - MovePart
+    FailedQuery:
+      name: failed
+      in: query
+      description: Filter mutations by whether they have a latest failure.
+      schema:
+        type: boolean
+    FromQuery:
+      name: from
+      in: query
+      description: |
+        Include events at or after this RFC3339 timestamp. When omitted, the
+        window defaults to the last 7 days.
+      schema:
+        type: string
+        format: date-time
+    HasConditionsQuery:
+      name: hasConditions
+      in: query
+      description: Filter resources by whether movoor detected conditions.
+      schema:
+        type: boolean
+    HasExceptionQuery:
+      name: hasException
+      in: query
+      description: Filter replication queue items by whether lastException is set.
+      schema:
+        type: boolean
+    HasPartitionsQuery:
+      name: hasPartitions
+      in: query
+      description: Filter tables by whether they have active partitions.
+      schema:
+        type: boolean
+    MaxBytesOnDiskQuery:
+      name: maxBytesOnDisk
+      in: query
+      description: Maximum bytes_on_disk filter for physical parts.
+      schema:
+        $ref: "#/components/schemas/UInt64String"
+    MinBytesOnDiskQuery:
+      name: minBytesOnDisk
+      in: query
+      description: Minimum bytes_on_disk filter for physical parts.
+      schema:
+        $ref: "#/components/schemas/UInt64String"
+    MutationIdQuery:
+      name: mutationId
+      in: query
+      description: Filter by ClickHouse mutation id.
+      schema:
+        type: string
+        examples:
+          - mutation_42.txt
+    NameQuery:
+      name: name
+      in: query
+      description: Filter by object name.
+      schema:
+        type: string
+        examples:
+          - event_date
+    NodeIdQuery:
+      name: nodeId
+      in: query
+      description: Filter by movoor configured node id.
+      schema:
+        type: string
+        examples:
+          - shard1-replica1
+    NodeIdQueryRequired:
+      name: nodeId
+      in: query
+      required: true
+      description: Movoor configured node id. Tiering actions are node-local.
+      schema:
+        type: string
+        examples:
+          - shard1-replica1
+    OperationKindQuery:
+      name: kind
+      in: query
+      description: Filter by API-owned operation kind. Invalid values return 400.
+      schema:
+        $ref: "#/components/schemas/OperationKind"
+    OperationOverlayQuery:
+      name: operation
+      in: query
+      description: |
+        Filter partitions by open operation overlay. Known values include moving,
+        merging, mutating, and fetching. Unknown values are valid and return an
+        empty result set when no matching overlay exists.
+      schema:
+        type: string
+        examples:
+          - moving
+    PartNameQuery:
+      name: partName
+      in: query
+      description: Filter by ClickHouse part name.
+      schema:
+        type: string
+        examples:
+          - 20260108_12_12_0
+    PartitionIdQuery:
+      name: partitionId
+      in: query
+      description: |
+        Filter by ClickHouse partition_id verbatim. partitionId is URL-safe but
+        unique only within the selected database and table.
+      schema:
+        type: string
+        examples:
+          - d82d64de29c8683be4aad2f0fd38d74e
+    PartitionIdPath:
+      name: partitionId
+      in: path
+      required: true
+      description: ClickHouse partition_id verbatim.
+      schema:
+        type: string
+        examples:
+          - d82d64de29c8683be4aad2f0fd38d74e
+    PlacementQuery:
+      name: placement
+      in: query
+      description: Filter partitions by API-owned target-disk placement. Invalid values return 400.
+      schema:
+        $ref: "#/components/schemas/Placement"
+    QueueTypeQuery:
+      name: type
+      in: query
+      description: |
+        Filter by open ClickHouse replication queue type. Known values include
+        GET_PART, MERGE_PARTS, MUTATE_PART, and DROP_RANGE.
+      schema:
+        type: string
+        examples:
+          - GET_PART
+    ReasonQuery:
+      name: reason
+      in: query
+      description: Filter by open detached part reason.
+      schema:
+        type: string
+        examples:
+          - broken
+    ReplicaQuery:
+      name: replica
+      in: query
+      description: Filter by replica id.
+      schema:
+        type: string
+        examples:
+          - replica1
+    SeverityQuery:
+      name: severity
+      in: query
+      description: Filter by API-owned condition severity. Invalid values return 400.
+      schema:
+        $ref: "#/components/schemas/Severity"
+    ShardQuery:
+      name: shard
+      in: query
+      description: Filter by shard id.
+      schema:
+        type: string
+        examples:
+          - shard1
+    StoragePolicyQuery:
+      name: storagePolicy
+      in: query
+      description: Filter tables by ClickHouse storage policy.
+      schema:
+        type: string
+        examples:
+          - movoor_tiered
+    TablePath:
+      name: table
+      in: path
+      required: true
+      description: ClickHouse table name.
+      schema:
+        type: string
+        examples:
+          - test_generic_network_month_local
+    TableQuery:
+      name: table
+      in: query
+      description: Filter by ClickHouse table name.
+      schema:
+        type: string
+        examples:
+          - test_generic_network_month_local
+    ToQuery:
+      name: to
+      in: query
+      description: Include events before or at this RFC3339 timestamp.
+      schema:
+        type: string
+        format: date-time
+    TieringDecisionQuery:
+      name: decision
+      in: query
+      description: Filter tiering plan entries by derived decision.
+      schema:
+        $ref: "#/components/schemas/TieringDecision"
+    TieringStatusQuery:
+      name: status
+      in: query
+      description: Filter tiering plan entries by observed status.
+      schema:
+        $ref: "#/components/schemas/TieringPartitionStatus"
+
+  responses:
+    BadRequest:
+      description: Malformed request or unsupported closed-enum query parameter.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+    Conflict:
+      description: State token mismatch or action cannot apply to the current plan.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+    InternalServerError:
+      description: Unexpected movoor server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+    NotFound:
+      description: Path resource was not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+    ServiceUnavailable:
+      description: No configured ClickHouse node responded to the collection request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetails"
+
   schemas:
+    UInt64String:
+      type: string
+      pattern: "^[0-9]+$"
+      description: Exact unsigned 64-bit ClickHouse integer encoded as decimal text.
+      examples:
+        - "104"
+    Int64String:
+      type: string
+      pattern: "^-?[0-9]+$"
+      description: Exact signed ClickHouse integer encoded as decimal text.
+      examples:
+        - "0"
+    NullableUInt64String:
+      anyOf:
+        - $ref: "#/components/schemas/UInt64String"
+        - type: "null"
+      description: Nullable exact unsigned 64-bit ClickHouse integer.
+    NullableDateTime:
+      anyOf:
+        - type: string
+          format: date-time
+        - type: "null"
+      description: Nullable RFC3339 timestamp.
+    NullableString:
+      anyOf:
+        - type: string
+        - type: "null"
+      description: Nullable string.
+
     Health:
       type: object
       required:
         - status
+      additionalProperties: false
       properties:
         status:
           type: string
           description: Overall service status.
           examples:
             - ok
-    Error:
+
+    ProblemDetails:
+      type: object
+      description: RFC 9457 problem details response.
+      required:
+        - type
+        - title
+        - status
+        - detail
+      additionalProperties: true
+      properties:
+        type:
+          type: string
+          format: uri
+          description: Stable problem type URI.
+          examples:
+            - https://clickhouse-movoor.dev/problems/invalid-parameter
+        title:
+          type: string
+          examples:
+            - Invalid query parameter
+        status:
+          type: integer
+          format: int32
+          minimum: 400
+          maximum: 599
+          examples:
+            - 400
+        detail:
+          type: string
+          examples:
+            - unsupported placement value
+        instance:
+          type: string
+          format: uri-reference
+          examples:
+            - /api/v1/tables/movoor_dev/test_generic_network_month_local/partitions
+        errors:
+          type: array
+          description: Parameter-level validation errors. Free-text sensitive input is not echoed.
+          items:
+            $ref: "#/components/schemas/ProblemError"
+    ProblemError:
       type: object
       required:
-        - error
+        - detail
+      additionalProperties: false
       properties:
+        parameter:
+          type: string
+          description: Query or path parameter associated with the validation error.
+          examples:
+            - placement
+        detail:
+          type: string
+          examples:
+            - unsupported placement value
+
+    Severity:
+      type: string
+      description: API-owned condition severity.
+      enum:
+        - critical
+        - warning
+        - info
+    WarningKind:
+      type: string
+      description: API-owned collection warning category.
+      enum:
+        - reachability
+        - capability
+        - partial_data
+        - query_error
+    Placement:
+      type: string
+      description: |
+        API-owned placement relative to the table's configured targetDisk. This
+        is not a hot/cold tier vocabulary.
+      enum:
+        - on_target
+        - off_target
+        - split
+        - replica_divergent
+        - missing_replica
+        - unknown
+    OperationKind:
+      type: string
+      description: API-owned operation kind.
+      enum:
+        - move
+        - merge
+        - mutation
+        - fetch
+        - replication_queue
+    TieringMode:
+      type: string
+      description: Tiering execution mode.
+      enum:
+        - "off"
+        - plan
+        - enforce
+    TieringPartitionStatus:
+      type: string
+      description: Derived physical tiering status.
+      enum:
+        - hot
+        - ready
+        - tiered
+        - split
+        - stalled
+        - misconfigured
+    TieringDecision:
+      type: string
+      description: |
+        Derived action the controller would issue for this partition. Each
+        actionable decision is a single convergence leg; multi-step flows
+        (e.g. the remerge strategy's consolidate, optimize, tier sequence)
+        chain through re-classification across reconcile cycles. The
+        consolidate leg co-locates a split partition's parts on the table's
+        optimizeOn side before the merge.
+      enum:
+        - none
+        - keep
+        - hold
+        - consolidate
+        - optimize
+        - tier
+        - append
+    TieringPauseState:
+      type: string
+      description: Runtime dispatch state.
+      enum:
+        - running
+        - stopping
+        - stopped
+    TieringAgeBasis:
+      type: string
+      enum:
+        - partitionTime
+        - frontier
+    TieringResplitStrategy:
+      type: string
+      enum:
+        - auto
+        - remerge
+        - append
+        - hold
+    TieringOptimizeSide:
+      type: string
+      description: |
+        Where the optimize leg runs. This also decides which direction a split
+        partition's parts move to co-locate before the merge: hot pulls cold
+        strays back for the round-trip; cold appends hot strays and merges in
+        place. Cold-side merges are intended only for target disks where FINAL
+        merges are operationally acceptable.
+      enum:
+        - hot
+        - cold
+
+    CollectionWarning:
+      type: object
+      description: |
+        Request-time collection warning. kind=reachability with a nodeId must
+        correspond to a /nodes item with reachable=false. Other warning kinds do
+        not imply node reachability failure.
+      required:
+        - kind
+        - code
+        - message
+      additionalProperties: false
+      properties:
+        kind:
+          $ref: "#/components/schemas/WarningKind"
+        code:
+          type: string
+          description: Open warning code.
+          examples:
+            - node_unreachable
+        message:
+          type: string
+          examples:
+            - clickhouse-shard2-replica2 did not respond before timeout
+        nodeId:
+          type: string
+          examples:
+            - shard2-replica2
+    CollectionMeta:
+      type: object
+      description: |
+        Request-time collection metadata. counts in responses describe the full
+        matched result set across collected nodes. A 200 response can be partial
+        when at least one node responded; zero responding nodes returns 503.
+      required:
+        - collectedAt
+        - partial
+        - collectionDurationMs
+        - nodesExpected
+        - nodesResponded
+        - nodesFailed
+        - warnings
+      additionalProperties: false
+      properties:
+        collectedAt:
+          type: string
+          format: date-time
+        partial:
+          type: boolean
+          description: True when one or more nodes failed or returned incomplete data.
+        collectionDurationMs:
+          type: integer
+          minimum: 0
+        nodesExpected:
+          type: integer
+          minimum: 0
+        nodesResponded:
+          type: integer
+          minimum: 0
+        nodesFailed:
+          type: integer
+          minimum: 0
+        warnings:
+          type: array
+          items:
+            $ref: "#/components/schemas/CollectionWarning"
+
+    NodeRef:
+      type: object
+      required:
+        - nodeId
+        - shard
+        - replica
+      additionalProperties: false
+      properties:
+        nodeId:
+          type: string
+          examples:
+            - shard1-replica1
+        shard:
+          type: string
+          examples:
+            - shard1
+        replica:
+          type: string
+          examples:
+            - replica1
+    LinkMap:
+      type: object
+      description: |
+        Ready-to-use uri-reference links, usually absolute-from-host paths like
+        /api/v1/tables/.... Clients should not resolve these against servers.url.
+        Links are included only when they encode useful filters or joins.
+      additionalProperties:
+        type: string
+        format: uri-reference
+    Evidence:
+      type: object
+      description: Opaque structured evidence for the operator UI.
+      additionalProperties: true
+
+    EmbeddedCondition:
+      type: object
+      description: Condition embedded in a specific resource.
+      required:
+        - code
+        - severity
+      additionalProperties: false
+      properties:
+        code:
+          type: string
+          description: Open condition code.
+          examples:
+            - replica_disk_mismatch
+        severity:
+          $ref: "#/components/schemas/Severity"
+        message:
+          type: string
+        count:
+          type: integer
+          minimum: 0
+        evidence:
+          $ref: "#/components/schemas/Evidence"
+
+    SeverityCounts:
+      type: object
+      description: Fixed, zero-filled counts keyed by API-owned condition severity.
+      required:
+        - critical
+        - warning
+        - info
+      additionalProperties: false
+      properties:
+        critical:
+          type: integer
+          minimum: 0
+        warning:
+          type: integer
+          minimum: 0
+        info:
+          type: integer
+          minimum: 0
+    PlacementCounts:
+      type: object
+      description: Fixed, zero-filled counts keyed by API-owned placement.
+      required:
+        - on_target
+        - off_target
+        - split
+        - replica_divergent
+        - missing_replica
+        - unknown
+      additionalProperties: false
+      properties:
+        on_target:
+          type: integer
+          minimum: 0
+        off_target:
+          type: integer
+          minimum: 0
+        split:
+          type: integer
+          minimum: 0
+        replica_divergent:
+          type: integer
+          minimum: 0
+        missing_replica:
+          type: integer
+          minimum: 0
+        unknown:
+          type: integer
+          minimum: 0
+    PartitionOperationCounts:
+      type: object
+      description: Fixed, zero-filled counts keyed by known partition operation overlays.
+      required:
+        - moving
+        - merging
+        - mutating
+        - fetching
+      additionalProperties: false
+      properties:
+        moving:
+          type: integer
+          minimum: 0
+        merging:
+          type: integer
+          minimum: 0
+        mutating:
+          type: integer
+          minimum: 0
+        fetching:
+          type: integer
+          minimum: 0
+    OperationKindCounts:
+      type: object
+      description: Fixed, zero-filled counts keyed by API-owned operation kind.
+      required:
+        - move
+        - merge
+        - mutation
+        - fetch
+        - replication_queue
+      additionalProperties: false
+      properties:
+        move:
+          type: integer
+          minimum: 0
+        merge:
+          type: integer
+          minimum: 0
+        mutation:
+          type: integer
+          minimum: 0
+        fetch:
+          type: integer
+          minimum: 0
+        replication_queue:
+          type: integer
+          minimum: 0
+    OpenCountMap:
+      type: object
+      description: Observed-key counts for open vocabularies.
+      additionalProperties:
+        type: integer
+        minimum: 0
+
+    NodesResponse:
+      type: object
+      required:
+        - collection
+        - items
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Node"
+    Node:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - endpoint
+            - reachable
+            - observedAt
+            - lastError
+          additionalProperties: false
+          properties:
+            endpoint:
+              type: string
+              format: uri
+              examples:
+                - clickhouse://clickhouse-shard1-replica1:9000
+            reachable:
+              type: boolean
+            observedAt:
+              type: string
+              format: date-time
+            version:
+              type: string
+              examples:
+                - 26.2.5.45
+            timezone:
+              type: string
+              examples:
+                - UTC
+            uptimeSeconds:
+              $ref: "#/components/schemas/UInt64String"
+            readonly:
+              type: boolean
+            sessionExpired:
+              type: boolean
+            replication:
+              $ref: "#/components/schemas/ReplicationSummary"
+            backgroundPools:
+              $ref: "#/components/schemas/BackgroundPools"
+            lastError:
+              $ref: "#/components/schemas/NullableString"
+    ReplicationSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        queueSize:
+          $ref: "#/components/schemas/UInt64String"
+        absoluteDelaySeconds:
+          $ref: "#/components/schemas/UInt64String"
+        futureParts:
+          $ref: "#/components/schemas/UInt64String"
+        totalReplicas:
+          $ref: "#/components/schemas/UInt64String"
+        activeReplicas:
+          $ref: "#/components/schemas/UInt64String"
+    BackgroundPools:
+      type: object
+      additionalProperties: false
+      properties:
+        mergesAndMutations:
+          $ref: "#/components/schemas/UInt64String"
+        moves:
+          $ref: "#/components/schemas/UInt64String"
+        fetches:
+          $ref: "#/components/schemas/UInt64String"
+
+    StorageDisksResponse:
+      type: object
+      required:
+        - collection
+        - items
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/StorageDisk"
+    StorageDisk:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - disk
+            - type
+            - objectStorageType
+            - isRemote
+            - isBroken
+            - capacityKnown
+            - freeSpaceBytes
+            - totalSpaceBytes
+            - unreservedSpaceBytes
+            - usedByActivePartsBytes
+          additionalProperties: false
+          properties:
+            disk:
+              type: string
+              examples:
+                - cold_disk
+            type:
+              type: string
+              description: Open ClickHouse disk type.
+              examples:
+                - ObjectStorage
+            objectStorageType:
+              type: string
+              description: Open ClickHouse object storage type.
+              examples:
+                - S3
+            isRemote:
+              type: boolean
+            isBroken:
+              type: boolean
+            path:
+              $ref: "#/components/schemas/NullableString"
+            cachePath:
+              $ref: "#/components/schemas/NullableString"
+            capacityKnown:
+              type: boolean
+            freeSpaceBytes:
+              $ref: "#/components/schemas/NullableUInt64String"
+            totalSpaceBytes:
+              $ref: "#/components/schemas/NullableUInt64String"
+            unreservedSpaceBytes:
+              $ref: "#/components/schemas/NullableUInt64String"
+            usedByActivePartsBytes:
+              $ref: "#/components/schemas/UInt64String"
+
+    TablesResponse:
+      type: object
+      required:
+        - collection
+        - items
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableListItem"
+    TableResponse:
+      type: object
+      required:
+        - collection
+        - item
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        item:
+          $ref: "#/components/schemas/TableDetail"
+    TableBase:
+      type: object
+      required:
+        - database
+        - table
+        - engine
+        - storagePolicy
+        - targetDisk
+        - partitionKey
+        - sortingKey
+        - primaryKey
+      additionalProperties: false
+      properties:
+        database:
+          type: string
+        table:
+          type: string
+        engine:
+          type: string
+        storagePolicy:
+          type: string
+        targetDisk:
+          type: string
+          description: Configured destination disk for movoor-managed moves.
+        partitionKey:
+          type: string
+        sortingKey:
+          type: string
+        primaryKey:
+          type: string
+        versionColumn:
+          anyOf:
+            - type: string
+            - type: "null"
+    TableListItem:
+      allOf:
+        - $ref: "#/components/schemas/TableBase"
+        - type: object
+          required:
+            - nodesObserved
+            - shardsObserved
+            - replicasPerShard
+            - activePartitions
+            - activeParts
+            - rows
+            - bytesOnDisk
+            - partitionPlacements
+            - partitionOperations
+            - activeOperations
+            - conditions
+            - links
+          additionalProperties: false
+          properties:
+            nodesObserved:
+              type: integer
+              minimum: 0
+            shardsObserved:
+              type: integer
+              minimum: 0
+            replicasPerShard:
+              type: integer
+              minimum: 0
+            activePartitions:
+              type: integer
+              minimum: 0
+            activeParts:
+              $ref: "#/components/schemas/UInt64String"
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            bytesOnDisk:
+              $ref: "#/components/schemas/UInt64String"
+            partitionPlacements:
+              $ref: "#/components/schemas/PlacementCounts"
+            partitionOperations:
+              $ref: "#/components/schemas/PartitionOperationCounts"
+            activeOperations:
+              type: integer
+              minimum: 0
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmbeddedCondition"
+            links:
+              $ref: "#/components/schemas/LinkMap"
+    TableDetail:
+      allOf:
+        - $ref: "#/components/schemas/TableBase"
+        - type: object
+          required:
+            - uuid
+            - samplingKey
+            - isReplicated
+            - nodesObserved
+            - activePartitions
+            - activeParts
+            - rows
+            - bytesOnDisk
+            - partitionPlacements
+            - partitionOperations
+            - nodes
+            - conditions
+          additionalProperties: false
+          properties:
+            uuid:
+              type: string
+            samplingKey:
+              type: string
+            isReplicated:
+              type: boolean
+            nodesObserved:
+              type: integer
+              minimum: 0
+            activePartitions:
+              type: integer
+              minimum: 0
+            activeParts:
+              $ref: "#/components/schemas/UInt64String"
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            bytesOnDisk:
+              $ref: "#/components/schemas/UInt64String"
+            minPartition:
+              anyOf:
+                - type: string
+                - type: "null"
+            maxPartition:
+              anyOf:
+                - type: string
+                - type: "null"
+            lastModificationTime:
+              $ref: "#/components/schemas/NullableDateTime"
+            partitionPlacements:
+              $ref: "#/components/schemas/PlacementCounts"
+            partitionOperations:
+              $ref: "#/components/schemas/PartitionOperationCounts"
+            nodes:
+              type: array
+              items:
+                $ref: "#/components/schemas/NodeTableState"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmbeddedCondition"
+    NodeTableState:
+      type: object
+      required:
+        - nodeId
+        - engine
+        - activeParts
+        - rows
+        - bytesOnDisk
+      additionalProperties: false
+      properties:
+        nodeId:
+          type: string
+        engine:
+          type: string
+        activeParts:
+          $ref: "#/components/schemas/UInt64String"
+        rows:
+          $ref: "#/components/schemas/UInt64String"
+        bytesOnDisk:
+          $ref: "#/components/schemas/UInt64String"
+        replica:
+          $ref: "#/components/schemas/ReplicaState"
+    ReplicaState:
+      type: object
+      additionalProperties: false
+      properties:
+        readonly:
+          type: boolean
+        sessionExpired:
+          type: boolean
+        queueSize:
+          $ref: "#/components/schemas/UInt64String"
+        absoluteDelaySeconds:
+          $ref: "#/components/schemas/UInt64String"
+        totalReplicas:
+          $ref: "#/components/schemas/UInt64String"
+        activeReplicas:
+          $ref: "#/components/schemas/UInt64String"
+
+    TableColumnsResponse:
+      type: object
+      required:
+        - collection
+        - database
+        - table
+        - items
+        - conditions
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        database:
+          type: string
+        table:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeColumns"
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbeddedCondition"
+    NodeColumns:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - columns
+            - conditions
+          additionalProperties: false
+          properties:
+            columns:
+              type: array
+              items:
+                $ref: "#/components/schemas/TableColumn"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmbeddedCondition"
+    TableColumn:
+      type: object
+      required:
+        - name
+        - position
+        - type
+        - kind
+        - defaultKind
+        - defaultExpression
+        - codecExpression
+        - ttlExpression
+        - comment
+        - isInPartitionKey
+        - isInSortingKey
+        - isInPrimaryKey
+        - isInSamplingKey
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+        position:
+          type: integer
+          minimum: 1
+        type:
+          type: string
+        kind:
+          type: string
+          description: Open ClickHouse column kind.
+        defaultKind:
+          $ref: "#/components/schemas/NullableString"
+        defaultExpression:
+          $ref: "#/components/schemas/NullableString"
+        codecExpression:
+          $ref: "#/components/schemas/NullableString"
+        ttlExpression:
+          $ref: "#/components/schemas/NullableString"
+        comment:
+          type: string
+        isInPartitionKey:
+          type: boolean
+        isInSortingKey:
+          type: boolean
+        isInPrimaryKey:
+          type: boolean
+        isInSamplingKey:
+          type: boolean
+
+    TablePartitionsResponse:
+      type: object
+      required:
+        - collection
+        - items
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Partition"
+    Partition:
+      type: object
+      required:
+        - database
+        - table
+        - partition
+        - partitionId
+        - targetDisk
+        - placement
+        - operations
+        - disks
+        - activeParts
+        - rows
+        - bytesOnDisk
+        - placements
+        - conditions
+      additionalProperties: false
+      properties:
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          type: string
+          description: Raw ClickHouse partition value for display and evidence only.
+          examples:
+            - "('mainnet','2026-01-08')"
+        partitionId:
+          type: string
+          description: ClickHouse partition_id verbatim, unique within database/table.
+          examples:
+            - d82d64de29c8683be4aad2f0fd38d74e
+        targetDisk:
+          type: string
+        placement:
+          $ref: "#/components/schemas/Placement"
+        operations:
+          type: array
+          description: Open partition operation overlays. Known values include moving, merging, mutating, and fetching.
+          items:
+            type: string
+        disks:
+          type: array
+          items:
+            type: string
+        activeParts:
+          $ref: "#/components/schemas/UInt64String"
+        rows:
+          $ref: "#/components/schemas/UInt64String"
+        bytesOnDisk:
+          $ref: "#/components/schemas/UInt64String"
+        lastModificationTime:
+          $ref: "#/components/schemas/NullableDateTime"
+        placements:
+          type: array
+          items:
+            $ref: "#/components/schemas/PartitionPlacement"
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbeddedCondition"
+    PartitionPlacement:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - disk
+            - activeParts
+            - rows
+            - bytesOnDisk
+          additionalProperties: false
+          properties:
+            disk:
+              type: string
+            activeParts:
+              $ref: "#/components/schemas/UInt64String"
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            bytesOnDisk:
+              $ref: "#/components/schemas/UInt64String"
+            lastModificationTime:
+              $ref: "#/components/schemas/NullableDateTime"
+
+    TablePartsResponse:
+      type: object
+      required:
+        - collection
+        - database
+        - table
+        - items
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        database:
+          type: string
+        table:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TablePart"
+    TablePart:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - database
+            - table
+            - partition
+            - partitionId
+            - partName
+            - active
+            - disk
+            - path
+            - partType
+            - rows
+            - bytesOnDisk
+            - modificationTime
+            - conditions
+          additionalProperties: false
+          properties:
+            database:
+              type: string
+            table:
+              type: string
+            partition:
+              type: string
+            partitionId:
+              type: string
+            partName:
+              type: string
+            uuid:
+              type: string
+            active:
+              type: boolean
+            disk:
+              type: string
+            path:
+              type: string
+            partType:
+              type: string
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            marks:
+              $ref: "#/components/schemas/UInt64String"
+            bytesOnDisk:
+              $ref: "#/components/schemas/UInt64String"
+            dataCompressedBytes:
+              $ref: "#/components/schemas/UInt64String"
+            dataUncompressedBytes:
+              $ref: "#/components/schemas/UInt64String"
+            marksBytes:
+              $ref: "#/components/schemas/UInt64String"
+            primaryKeyBytesInMemory:
+              $ref: "#/components/schemas/UInt64String"
+            primaryKeyBytesInMemoryAllocated:
+              $ref: "#/components/schemas/UInt64String"
+            secondaryIndicesCompressedBytes:
+              $ref: "#/components/schemas/UInt64String"
+            secondaryIndicesUncompressedBytes:
+              $ref: "#/components/schemas/UInt64String"
+            secondaryIndicesMarksBytes:
+              $ref: "#/components/schemas/UInt64String"
+            modificationTime:
+              type: string
+              format: date-time
+            removeTime:
+              $ref: "#/components/schemas/NullableDateTime"
+            refcount:
+              $ref: "#/components/schemas/UInt64String"
+            minBlockNumber:
+              $ref: "#/components/schemas/Int64String"
+            maxBlockNumber:
+              $ref: "#/components/schemas/Int64String"
+            level:
+              $ref: "#/components/schemas/UInt64String"
+            dataVersion:
+              $ref: "#/components/schemas/UInt64String"
+            deleteTtlInfoMin:
+              $ref: "#/components/schemas/NullableDateTime"
+            deleteTtlInfoMax:
+              $ref: "#/components/schemas/NullableDateTime"
+            moveTtlInfo:
+              type: array
+              items:
+                $ref: "#/components/schemas/TtlInfo"
+            recompressionTtlInfo:
+              type: array
+              items:
+                $ref: "#/components/schemas/TtlInfo"
+            defaultCompressionCodec:
+              type: string
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmbeddedCondition"
+    TtlInfo:
+      type: object
+      additionalProperties: true
+      description: Raw ClickHouse TTL info object.
+
+    DetachedPartsResponse:
+      type: object
+      required:
+        - collection
+        - database
+        - table
+        - items
+        - counts
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        database:
+          type: string
+        table:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/DetachedPart"
+        counts:
+          $ref: "#/components/schemas/DetachedPartCounts"
+    DetachedPart:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - database
+            - table
+            - partitionId
+            - partName
+            - disk
+            - reason
+            - path
+            - bytesOnDisk
+            - rows
+            - conditions
+          additionalProperties: false
+          properties:
+            database:
+              type: string
+            table:
+              type: string
+            partitionId:
+              type: string
+            partName:
+              type: string
+            disk:
+              type: string
+            reason:
+              type: string
+              description: Open ClickHouse detached part reason.
+            path:
+              type: string
+            bytesOnDisk:
+              $ref: "#/components/schemas/UInt64String"
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            minBlockNumber:
+              $ref: "#/components/schemas/Int64String"
+            maxBlockNumber:
+              $ref: "#/components/schemas/Int64String"
+            level:
+              $ref: "#/components/schemas/UInt64String"
+            modificationTime:
+              type: string
+              format: date-time
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmbeddedCondition"
+    DetachedPartCounts:
+      type: object
+      description: Counts for the full matched detached part set.
+      required:
+        - total
+        - byReason
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        byReason:
+          $ref: "#/components/schemas/OpenCountMap"
+
+    OperationsResponse:
+      type: object
+      required:
+        - collection
+        - items
+        - counts
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Operation"
+        counts:
+          $ref: "#/components/schemas/OperationCounts"
+    Operation:
+      type: object
+      required:
+        - operationId
+        - kind
+        - nodeId
+        - database
+        - table
+        - attemptId
+        - state
+      additionalProperties: false
+      properties:
+        operationId:
+          type: string
+          description: Opaque id stable for this operation attempt. Clients must not parse it.
+        kind:
+          $ref: "#/components/schemas/OperationKind"
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          $ref: "#/components/schemas/NullableString"
+        partitionId:
+          $ref: "#/components/schemas/NullableString"
+        attemptId:
+          type: string
+          description: ClickHouse/source discriminator preventing repeated operation aliasing.
+        state:
+          type: string
+          description: Open operation state.
+          examples:
+            - running
+        elapsedSeconds:
+          type: number
+          format: double
+          minimum: 0
+        progress:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 1
+        sourceDisk:
+          $ref: "#/components/schemas/NullableString"
+        targetDisk:
+          $ref: "#/components/schemas/NullableString"
+        bytesTotal:
+          $ref: "#/components/schemas/NullableUInt64String"
+        bytesProcessed:
+          $ref: "#/components/schemas/NullableUInt64String"
+        latestMessage:
+          $ref: "#/components/schemas/NullableString"
+        startedAt:
+          $ref: "#/components/schemas/NullableDateTime"
+    OperationCounts:
+      type: object
+      description: Counts for the full matched operation set.
+      required:
+        - total
+        - byKind
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        byKind:
+          $ref: "#/components/schemas/OperationKindCounts"
+
+    MutationsResponse:
+      type: object
+      required:
+        - collection
+        - items
+        - counts
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MutationOperation"
+        counts:
+          $ref: "#/components/schemas/MutationCounts"
+    MutationOperation:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - operationId
+            - kind
+            - database
+            - table
+            - mutationId
+            - attemptId
+            - command
+            - createTime
+            - isDone
+            - isKilled
+            - partsToDo
+            - partsToDoNames
+            - blockNumbers
+            - conditions
+          additionalProperties: false
+          properties:
+            operationId:
+              type: string
+              description: Opaque id stable for this mutation attempt.
+            kind:
+              type: string
+              const: mutation
+            database:
+              type: string
+            table:
+              type: string
+            mutationId:
+              type: string
+            attemptId:
+              type: string
+            command:
+              type: string
+            createTime:
+              type: string
+              format: date-time
+            isDone:
+              type: boolean
+            isKilled:
+              type: boolean
+            partsToDo:
+              $ref: "#/components/schemas/UInt64String"
+            partsToDoNames:
+              type: array
+              items:
+                type: string
+            blockNumbers:
+              type: array
+              items:
+                $ref: "#/components/schemas/MutationBlockNumber"
+            latestFailedPart:
+              $ref: "#/components/schemas/NullableString"
+            latestFailTime:
+              $ref: "#/components/schemas/NullableDateTime"
+            latestFailReason:
+              $ref: "#/components/schemas/NullableString"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmbeddedCondition"
+    MutationBlockNumber:
+      type: object
+      required:
+        - partitionId
+        - number
+      additionalProperties: false
+      properties:
+        partitionId:
+          type: string
+        number:
+          $ref: "#/components/schemas/UInt64String"
+    MutationCounts:
+      type: object
+      description: Counts for the full matched mutation set.
+      required:
+        - total
+        - unfinished
+        - failed
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        unfinished:
+          type: integer
+          minimum: 0
+        failed:
+          type: integer
+          minimum: 0
+
+    ReplicationQueueResponse:
+      type: object
+      required:
+        - collection
+        - items
+        - counts
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ReplicationQueueOperation"
+        counts:
+          $ref: "#/components/schemas/ReplicationQueueCounts"
+    ReplicationQueueOperation:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - operationId
+            - kind
+            - database
+            - table
+            - replicaName
+            - position
+            - nodeName
+            - attemptId
+            - type
+            - createTime
+            - isCurrentlyExecuting
+            - numTries
+            - conditions
+          additionalProperties: false
+          properties:
+            operationId:
+              type: string
+              description: Opaque id stable for this queue item attempt.
+            kind:
+              type: string
+              const: replication_queue
+            database:
+              type: string
+            table:
+              type: string
+            replicaName:
+              type: string
+            position:
+              $ref: "#/components/schemas/UInt64String"
+            nodeName:
+              type: string
+            attemptId:
+              type: string
+            type:
+              type: string
+              description: Open ClickHouse replication queue item type.
+              examples:
+                - GET_PART
+            createTime:
+              type: string
+              format: date-time
+            requiredQuorum:
+              $ref: "#/components/schemas/UInt64String"
+            sourceReplica:
+              $ref: "#/components/schemas/NullableString"
+            newPartName:
+              $ref: "#/components/schemas/NullableString"
+            partsToMerge:
+              type: array
+              items:
+                type: string
+            isDetach:
+              type: boolean
+            isCurrentlyExecuting:
+              type: boolean
+            numTries:
+              $ref: "#/components/schemas/UInt64String"
+            lastAttemptTime:
+              $ref: "#/components/schemas/NullableDateTime"
+            lastPostponeTime:
+              $ref: "#/components/schemas/NullableDateTime"
+            numPostponed:
+              $ref: "#/components/schemas/UInt64String"
+            postponeReason:
+              $ref: "#/components/schemas/NullableString"
+            lastException:
+              $ref: "#/components/schemas/NullableString"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/EmbeddedCondition"
+    ReplicationQueueCounts:
+      type: object
+      description: Counts for the full matched replication queue set.
+      required:
+        - total
+        - currentlyExecuting
+        - withException
+        - byType
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        currentlyExecuting:
+          type: integer
+          minimum: 0
+        withException:
+          type: integer
+          minimum: 0
+        byType:
+          $ref: "#/components/schemas/OpenCountMap"
+
+    PartEventsResponse:
+      type: object
+      required:
+        - collection
+        - items
+        - counts
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/PartEvent"
+        counts:
+          $ref: "#/components/schemas/PartEventCounts"
+    PartEvent:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - eventId
+            - database
+            - table
+            - partitionId
+            - partName
+            - eventType
+            - eventTime
+            - durationMs
+            - rows
+            - bytesCompressed
+            - bytesUncompressed
+            - error
+          additionalProperties: false
+          properties:
+            eventId:
+              type: string
+              description: Opaque id stable for this immutable part_log event.
+            database:
+              type: string
+            table:
+              type: string
+            partitionId:
+              type: string
+            partName:
+              type: string
+            eventType:
+              type: string
+              description: Open ClickHouse part_log event type.
+            eventTime:
+              type: string
+              format: date-time
+            durationMs:
+              $ref: "#/components/schemas/UInt64String"
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            bytesCompressed:
+              $ref: "#/components/schemas/UInt64String"
+            bytesUncompressed:
+              $ref: "#/components/schemas/UInt64String"
+            readRows:
+              $ref: "#/components/schemas/UInt64String"
+            readBytes:
+              $ref: "#/components/schemas/UInt64String"
+            mergedFrom:
+              type: array
+              items:
+                type: string
+            sourceDisk:
+              $ref: "#/components/schemas/NullableString"
+            targetDisk:
+              $ref: "#/components/schemas/NullableString"
+            error:
+              $ref: "#/components/schemas/Int64String"
+            exception:
+              $ref: "#/components/schemas/NullableString"
+    PartEventCounts:
+      type: object
+      description: Counts for the full matched part event set.
+      required:
+        - total
+        - byEventType
+        - withErrors
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        byEventType:
+          $ref: "#/components/schemas/OpenCountMap"
+        withErrors:
+          type: integer
+          minimum: 0
+
+    TieringPlanResponse:
+      type: object
+      required:
+        - tables
+        - items
+      additionalProperties: false
+      properties:
+        tables:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringTablePlan"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringPartition"
+    TieringTablePlan:
+      type: object
+      required:
+        - nodeId
+        - database
+        - table
+        - reconciledAt
+        - tickDurationMs
+        - generation
+        - lastError
+        - partitions
+        - actionable
+        - conditions
+      additionalProperties: false
+      properties:
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        reconciledAt:
+          type: string
+          format: date-time
+        tickDurationMs:
+          type: integer
+          minimum: 0
+        generation:
+          type: string
+        lastError:
+          $ref: "#/components/schemas/NullableString"
+        partitions:
+          type: integer
+          minimum: 0
+        actionable:
+          type: integer
+          minimum: 0
+        conditions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringCondition"
+    TieringPartition:
+      allOf:
+        - $ref: "#/components/schemas/NodeRef"
+        - type: object
+          required:
+            - database
+            - table
+            - partition
+            - partitionId
+            - status
+            - decision
+            - reason
+            - rows
+            - bytesOnDisk
+            - activeParts
+            - disks
+            - targetDisk
+            - policy
+            - conditions
+            - stateToken
+            - reconciledAt
+            - effectiveMode
+          additionalProperties: false
+          properties:
+            database:
+              type: string
+            table:
+              type: string
+            partition:
+              type: string
+            partitionId:
+              type: string
+            status:
+              $ref: "#/components/schemas/TieringPartitionStatus"
+            decision:
+              $ref: "#/components/schemas/TieringDecision"
+            reason:
+              type: string
+            rows:
+              $ref: "#/components/schemas/UInt64String"
+            bytesOnDisk:
+              $ref: "#/components/schemas/UInt64String"
+            activeParts:
+              $ref: "#/components/schemas/UInt64String"
+            disks:
+              type: array
+              items:
+                $ref: "#/components/schemas/TieringDiskPart"
+            targetDisk:
+              type: string
+            hotVolume:
+              type: string
+            policy:
+              $ref: "#/components/schemas/TieringPolicy"
+            conditions:
+              type: array
+              items:
+                $ref: "#/components/schemas/TieringCondition"
+            hold:
+              $ref: "#/components/schemas/TieringHoldDetail"
+            stateToken:
+              type: string
+              description: CAS token required by apply and retry calls.
+            reconciledAt:
+              type: string
+              format: date-time
+            effectiveMode:
+              $ref: "#/components/schemas/TieringMode"
+    TieringHoldDetail:
+      type: object
+      description: |
+        Structured explanation of a hold/keep verdict: which gate is holding
+        the partition, the clock it is waiting on, and — where computable —
+        when it releases. successor-activity releases at the dead-group
+        horizon unless a newer sibling receives inserts first; stalled holds
+        carry the retry schedule instead.
+      required:
+        - gate
+      additionalProperties: false
+      properties:
+        gate:
+          type: string
+          description: >-
+            One of replica-health, mutation, part-log-required, insert-quiet,
+            physical-quiet, successor-activity, age, or stalled.
+        window:
+          type: string
+          description: Quiet/age window the gate applies.
+        lastInsertAt:
+          type: string
+          format: date-time
+        lastChangeAt:
+          type: string
+          format: date-time
+        releasesAt:
+          type: string
+          format: date-time
+        retryAt:
+          type: string
+          format: date-time
+        failures:
+          type: integer
+    TieringDiskPart:
+      type: object
+      required:
+        - disk
+        - parts
+      additionalProperties: false
+      properties:
+        disk:
+          type: string
+        parts:
+          $ref: "#/components/schemas/UInt64String"
+    TieringPolicy:
+      type: object
+      required:
+        - mode
+        - ageBasis
+        - quietFor
+        - tierFrozenAfter
+        - targetDisk
+        - optimizeToParts
+        - skipOptimize
+        - optimizeOn
+        - optimizeSkipAboveBytes
+        - resplitStrategy
+        - resplitQuietFor
+        - fragmentAbovePartCount
+      additionalProperties: false
+      properties:
+        mode:
+          $ref: "#/components/schemas/TieringMode"
+        ageBasis:
+          $ref: "#/components/schemas/TieringAgeBasis"
+        olderThan:
+          type: string
+        field:
+          type: string
+        keepLast:
+          $ref: "#/components/schemas/UInt64String"
+        quietFor:
+          type: string
+        tierFrozenAfter:
+          type: string
+        targetDisk:
+          type: string
+        hotVolume:
+          type: string
+        optimizeToParts:
+          $ref: "#/components/schemas/UInt64String"
+        skipOptimize:
+          type: boolean
+        optimizeOn:
+          $ref: "#/components/schemas/TieringOptimizeSide"
+        optimizeSkipAboveBytes:
+          $ref: "#/components/schemas/UInt64String"
+        resplitStrategy:
+          $ref: "#/components/schemas/TieringResplitStrategy"
+        resplitQuietFor:
+          type: string
+        fragmentAbovePartCount:
+          $ref: "#/components/schemas/UInt64String"
+    TieringCondition:
+      type: object
+      required:
+        - severity
+        - code
+        - message
+        - observedAt
+      additionalProperties: false
+      properties:
+        severity:
+          $ref: "#/components/schemas/Severity"
+        code:
+          type: string
+        message:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          type: string
+        partitionId:
+          type: string
+    TieringStatus:
+      type: object
+      required:
+        - mode
+        - pauseState
+        - maxConcurrentPartitions
+        - maxMovesPerCycle
+        - maxBytesInFlight
+        - bytesInFlight
+        - maxBytesPerDay
+        - bytesMovedToday
+        - updatedAt
+        - inFlight
+      additionalProperties: false
+      properties:
+        mode:
+          $ref: "#/components/schemas/TieringMode"
+        pauseState:
+          $ref: "#/components/schemas/TieringPauseState"
+        pauseReason:
+          type: string
+        inFlight:
+          type: array
+          description: |
+            Movoor's intent-level "active now": convergence legs currently
+            executing, spanning the whole dispatch-to-converged window rather
+            than the brief moment the physical operation is visible in
+            system.moves/system.merges.
+          items:
+            $ref: "#/components/schemas/TieringInFlightLeg"
+        maxConcurrentPartitions:
+          type: integer
+          minimum: 0
+          description: >-
+            Concurrent leg cap per node (nodes own independent disks and do
+            not starve each other); maxBytesInFlight is the aggregate ceiling.
+        maxMovesPerCycle:
+          type: integer
+          minimum: 0
+        maxBytesInFlight:
+          $ref: "#/components/schemas/UInt64String"
+        bytesInFlight:
+          $ref: "#/components/schemas/UInt64String"
+        maxBytesPerDay:
+          $ref: "#/components/schemas/UInt64String"
+        bytesMovedToday:
+          $ref: "#/components/schemas/UInt64String"
+        updatedAt:
+          type: string
+          format: date-time
+    TieringInFlightLeg:
+      type: object
+      required:
+        - nodeId
+        - database
+        - table
+        - partition
+        - partitionId
+        - action
+        - bytes
+        - startedAt
+        - source
+      additionalProperties: false
+      properties:
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          type: string
+        partitionId:
+          type: string
+        action:
+          $ref: "#/components/schemas/TieringDecision"
+        bytes:
+          $ref: "#/components/schemas/UInt64String"
+        startedAt:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [dispatch, supervised]
+          description: dispatch = autonomous enforce loop; supervised = operator apply.
+    TieringHistoryResponse:
+      type: object
+      required:
+        - items
+      additionalProperties: false
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TieringHistoryEntry"
+    TieringHistoryEntry:
+      type: object
+      required:
+        - time
+        - nodeId
+        - database
+        - table
+        - partition
+        - partitionId
+        - action
+        - outcome
+        - durationMs
+        - bytes
+      additionalProperties: false
+      properties:
+        time:
+          type: string
+          format: date-time
+        nodeId:
+          type: string
+        database:
+          type: string
+        table:
+          type: string
+        partition:
+          type: string
+        partitionId:
+          type: string
+        action:
+          $ref: "#/components/schemas/TieringDecision"
+        outcome:
+          type: string
+          description: |
+            "success" or "error" for completed legs in history; "started" in
+            apply/retry responses, acknowledging a leg that now runs in the
+            background.
+          examples:
+            - success
+            - started
+        durationMs:
+          type: integer
+          minimum: 0
+        bytes:
+          $ref: "#/components/schemas/UInt64String"
         error:
           type: string
-          description: Human-readable error message.
+        attemptId:
+          type: string
+    TieringApplyRequest:
+      type: object
+      required:
+        - stateToken
+      additionalProperties: false
+      properties:
+        stateToken:
+          type: string
+    TieringApplyResponse:
+      type: object
+      required:
+        - item
+      additionalProperties: false
+      properties:
+        item:
+          $ref: "#/components/schemas/TieringHistoryEntry"
+
+    ConditionsResponse:
+      type: object
+      required:
+        - collection
+        - items
+        - counts
+      additionalProperties: false
+      properties:
+        collection:
+          $ref: "#/components/schemas/CollectionMeta"
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Condition"
+        counts:
+          $ref: "#/components/schemas/ConditionCounts"
+    Condition:
+      type: object
+      required:
+        - conditionId
+        - severity
+        - code
+        - message
+        - observedAt
+      additionalProperties: false
+      properties:
+        conditionId:
+          type: string
+          description: Opaque id stable for the logical condition. Clients must not parse it.
+        severity:
+          $ref: "#/components/schemas/Severity"
+        code:
+          type: string
+          description: Open condition code.
+          examples:
+            - replica_disk_mismatch
+        message:
+          type: string
+        database:
+          $ref: "#/components/schemas/NullableString"
+        table:
+          $ref: "#/components/schemas/NullableString"
+        partition:
+          $ref: "#/components/schemas/NullableString"
+        partitionId:
+          $ref: "#/components/schemas/NullableString"
+        nodeId:
+          $ref: "#/components/schemas/NullableString"
+        observedAt:
+          type: string
+          format: date-time
+        evidence:
+          $ref: "#/components/schemas/Evidence"
+        links:
+          $ref: "#/components/schemas/LinkMap"
+    ConditionCounts:
+      type: object
+      description: Counts for the full matched condition set.
+      required:
+        - total
+        - bySeverity
+      additionalProperties: false
+      properties:
+        total:
+          type: integer
+          minimum: 0
+        bySeverity:
+          $ref: "#/components/schemas/SeverityCounts"
