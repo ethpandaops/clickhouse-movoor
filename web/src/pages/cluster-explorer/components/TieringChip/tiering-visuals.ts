@@ -1,15 +1,19 @@
+import type { ComponentType } from 'react';
 import {
-  ArrowsPointingInIcon,
+  ArrowDownTrayIcon,
   ArrowsRightLeftIcon,
   ArrowUpIcon,
   CheckCircleIcon,
   ExclamationTriangleIcon,
   MinusIcon,
   PauseCircleIcon,
+  PencilSquareIcon,
 } from '@heroicons/react/20/solid';
+import { operationTone } from '../../tiering-model';
 import type { BadgeTone } from '../Badge';
+import { ActionsIcon, MergeIcon, MoveIcon, OptimizeIcon } from './action-icons';
 
-type TieringIcon = typeof ArrowUpIcon;
+type TieringIcon = ComponentType<{ className?: string }>;
 
 export interface TieringVisual {
   tone: BadgeTone;
@@ -26,8 +30,8 @@ export interface TieringVisual {
  */
 export const tieringVisuals: Record<string, TieringVisual> = {
   consolidate: { tone: 'warning', icon: ArrowsRightLeftIcon, quiet: false },
-  optimize: { tone: 'warning', icon: ArrowsPointingInIcon, quiet: false },
-  tier: { tone: 'warning', icon: ArrowUpIcon, quiet: false },
+  optimize: { tone: 'warning', icon: OptimizeIcon, quiet: false },
+  tier: { tone: 'warning', icon: MoveIcon, quiet: false },
   append: { tone: 'warning', icon: ArrowUpIcon, quiet: false },
   split: { tone: 'warning', icon: ArrowsRightLeftIcon, quiet: false },
   stalled: { tone: 'warning', icon: ExclamationTriangleIcon, quiet: false },
@@ -38,9 +42,23 @@ export const tieringVisuals: Record<string, TieringVisual> = {
   keep: { tone: 'muted', icon: MinusIcon, quiet: true },
   hot: { tone: 'muted', icon: MinusIcon, quiet: true },
   none: { tone: 'muted', icon: MinusIcon, quiet: true },
+  // Not a decision/status: the "N actions" rollup and the actions summary stat.
+  actions: { tone: 'warning', icon: ActionsIcon, quiet: false },
 };
 
 export const fallbackTieringVisual: TieringVisual = { tone: 'muted', icon: MinusIcon, quiet: true };
+
+const operationIcons: Record<string, TieringIcon> = {
+  merge: MergeIcon,
+  move: MoveIcon,
+  mutation: PencilSquareIcon,
+  fetch: ArrowDownTrayIcon,
+};
+
+/** Live cluster operation kind → loud chip visual; tone stays with operationTone. */
+export function operationVisual(kind: string): TieringVisual {
+  return { tone: operationTone(kind), icon: operationIcons[kind] ?? MinusIcon, quiet: false };
+}
 
 export const quietToneTextClass: Record<BadgeTone, string> = {
   danger: 'text-danger',
