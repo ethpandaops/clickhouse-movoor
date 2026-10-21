@@ -472,16 +472,14 @@ func (e *Executor) attemptID(verdict Verdict) string {
 }
 
 func isNoopOptimize(err error) bool {
-	var ex *clickhouse.Exception
-	if errors.As(err, &ex) {
+	if ex, ok := errors.AsType[*clickhouse.Exception](err); ok {
 		return ex.Code == 388 && strings.Contains(strings.ToLower(ex.Message), "already")
 	}
 	return false
 }
 
 func isAlreadyMoved(err error) bool {
-	var ex *clickhouse.Exception
-	if errors.As(err, &ex) {
+	if ex, ok := errors.AsType[*clickhouse.Exception](err); ok {
 		message := strings.ToLower(ex.Message)
 		return ex.Code == 479 && (strings.Contains(message, "already on disk") || strings.Contains(message, "already on volume"))
 	}

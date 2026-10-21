@@ -94,7 +94,7 @@ func TestDecisionAndLayoutEdgeCoverage(t *testing.T) {
 	frozen.Partitions = append([]PartitionObservation{{GroupKey: "other"}}, frozen.Partitions...)
 	require.True(t, groupFrozen(frozen, "mainnet", now))
 
-	timeObs := timeObservation(now, "toYYYYMM", "202606")
+	timeObs := timeObservation(now, "toYYYYMM", now.Format("200601"))
 	timeObs.Partitions[0].MaxModificationTime = now.Add(-2 * timeObs.Settings.TierFrozenAfter.Duration)
 	eligible, reason = ageEligible(timeObs, timeObs.Partitions[0], now)
 	require.True(t, eligible)

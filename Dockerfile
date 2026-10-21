@@ -13,7 +13,7 @@ COPY web/ ./
 RUN pnpm build
 
 # ---- Go build stage ----
-FROM golang:1.26.4 AS build
+FROM golang:1.26.10 AS build
 
 WORKDIR /src
 
