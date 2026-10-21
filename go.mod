@@ -1,6 +1,6 @@
 module github.com/ethpandaops/clickhouse-movoor
 
-go 1.26.4
+go 1.26.10
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
