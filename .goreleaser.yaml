@@ -44,7 +44,7 @@ dockers_v2:
     ids:
       - clickhouse-movoor
     images:
-      - "ethpandaops/clickhouse-movoor"
+      - "ghcr.io/ethpandaops/clickhouse-movoor"
     tags:
       - "{{ .Tag }}"
       - "{{ .Major }}.{{ .Minor }}"

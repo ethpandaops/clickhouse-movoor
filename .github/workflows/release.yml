@@ -5,16 +5,17 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  packages: write
-  id-token: write
-
 jobs:
   release:
-    runs-on:
-      - self-hosted-ghr
-      - size-l-x64
+    permissions:
+      contents: write      # GitHub release
+      packages: write      # push to ghcr.io/ethpandaops
+      id-token: write      # cosign, attest, and authenticate to the image mirror
+      attestations: write
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.attest.outputs.image }}
+      digests: ${{ steps.attest.outputs.digests }}
     env:
       CLICKHOUSE_MOVOOR_PUBLISH_DOCKER: "1"
     steps:
@@ -44,8 +45,9 @@ jobs:
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         if: env.CLICKHOUSE_MOVOOR_PUBLISH_DOCKER == '1'
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
         if: env.CLICKHOUSE_MOVOOR_PUBLISH_DOCKER == '1'
@@ -64,3 +66,30 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLICKHOUSE_MOVOOR_PUBLISH_DOCKER: ${{ env.CLICKHOUSE_MOVOOR_PUBLISH_DOCKER }}
+
+      - name: Attest images
+        id: attest
+        if: env.CLICKHOUSE_MOVOOR_PUBLISH_DOCKER == '1'
+        uses: ethpandaops/actions/mirror-image@738aeadbcdc54f1c9af659d35f8ef29dd5c0fae6
+        with:
+          goreleaser-artifacts: dist/artifacts.json
+          mirror: "false"
+
+  # Separate job, so "Re-run failed jobs" retries only the mirror and never
+  # rebuilds the images.
+  mirror:
+    needs: release
+    if: needs.release.outputs.digests != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      id-token: write      # authenticate to the image mirror
+    steps:
+      - name: Mirror to Docker Hub
+        uses: ethpandaops/actions/mirror-image@738aeadbcdc54f1c9af659d35f8ef29dd5c0fae6
+        with:
+          image: ${{ needs.release.outputs.image }}
+          tags: ${{ needs.release.outputs.digests }}
+          attest: "false"
+          mirror-url: ${{ secrets.IMAGE_MIRROR_URL }}
